@@ -6,6 +6,9 @@
 
 - Typed, reusable glossary data for misconception-aware feedback.
 - Contrastive wrong-answer feedback defining both the correct concept and the learner’s selected concept when available.
+- Complete 118-element periodic table with atomic number, symbol, name, atomic mass, group, period, category coloring, search, and element detail views.
+- Touch-friendly floating Tools control beside the active quiz.
+- Chemistry-aware tool tabs that establish the subject-tool pattern for future quiz packages.
 - Product documentation covering architecture, persistence, content authority, quality controls, and the multi-subject roadmap.
 
 ### Changed

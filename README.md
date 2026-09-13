@@ -24,6 +24,7 @@ The repository currently contains a working local-first prototype with:
 - Concept-level mastery and weak-topic weighting
 - Generated particle diagrams
 - An in-session reference-tools panel
+- A complete searchable periodic table available from a floating chemistry-tools control
 - Complete active-session persistence in `localStorage`
 - A session report separating first-try success, misses, and recovered questions
 
@@ -75,6 +76,7 @@ Important current files:
 
 - `app/app.vue` — quiz engine, current chemistry templates, modes, reports, and interface
 - `app/data/studyGlossary.ts` — subject-agnostic glossary contract and current chemistry definitions
+- `app/data/periodicTable.ts` — typed periodic-table dataset and chemistry category metadata
 - `course-materials/` — source documents used to validate the current question bank
 - `RELEASE_NOTES.md` — implemented changes by release
 
@@ -147,6 +149,13 @@ The app should not add adjacent General Chemistry topics merely because they are
 - Add content adapters for numerical work, timelines, vocabulary, diagrams, passages, and multi-step reasoning.
 - Generate a typed glossary for contrastive feedback in every subject—not only chemistry.
 - Validate generated questions for duplicate wording, answer ambiguity, unsupported scope, and calculation correctness.
+
+### Contextual study tools
+
+- Register tools by quiz subject instead of placing subject logic in the generic renderer.
+- Keep the periodic table, chemistry equations, and conversion references available for chemistry quizzes.
+- Provide subject-appropriate equivalents for other quiz packages, such as timelines, formula sheets, maps, calculators, vocabulary references, or approved source excerpts.
+- Allow quiz creators to decide which registered tools are permitted during practice and test simulations.
 
 ### Platform capabilities
 
