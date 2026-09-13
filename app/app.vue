@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { findGlossaryEntry } from './data/studyGlossary'
 
 type Mode = 'learn' | 'exam' | 'weak' | 'grind'
 type Choice = { label: string; value: string }
@@ -70,6 +71,7 @@ const wasCorrect = ref(false)
 const examQuestions = ref<Question[]>([])
 const examIndex = ref(0)
 const sessionRecords = ref<AttemptRecord[]>([])
+const resumeAvailable = ref(false)
 const recentIds = ref<string[]>([])
 const showHint = ref(false)
 const showTools = ref(false)
@@ -450,12 +452,16 @@ const topicGroups = computed(() => {
   return groups
 })
 const masteryPercent = computed(() => Math.round(Object.values(mastery.value).reduce((sum, x) => sum + x.score, 0) / concepts.length))
-const modeTitle = computed(() => ({ learn: 'Learn mode', exam: 'Exam simulation', weak: 'Weak topics', grind: 'Quick grind' })[mode.value])
-const progressText = computed(() => mode.value === 'exam' ? `${examIndex.value + 1} / 25` : `${stats.value.correct} / ${stats.value.attempted}`)
+const modeTitle = computed(() => ({ learn: 'Learn mode', exam: 'Practice test', weak: 'Weak topics', grind: 'Quick grind' })[mode.value])
+const sessionTarget = computed(() => ({ learn: 25, exam: 50, weak: 20, grind: 0 })[mode.value])
+const questionPosition = computed(() => mode.value === 'exam' ? examIndex.value + 1 : sessionRecords.value.length + (sessionRecords.value.some(r => r.question.id === current.value?.id) ? 0 : 1))
+const progressText = computed(() => sessionTarget.value ? `${Math.min(questionPosition.value, sessionTarget.value)} / ${sessionTarget.value}` : `${sessionRecords.value.length} done`)
 const firstTryCorrect = computed(() => sessionRecords.value.filter(r => r.firstCorrect).length)
 const recoveredCount = computed(() => sessionRecords.value.filter(r => !r.firstCorrect && r.solved).length)
 const sessionAccuracy = computed(() => sessionRecords.value.length ? Math.round(firstTryCorrect.value / sessionRecords.value.length * 100) : 0)
 const currentAttempts = computed(() => sessionRecords.value.find(r => r.question.id === current.value?.id)?.attempts || 0)
+const selectedDefinition = computed(() => findGlossaryEntry(response.value))
+const correctDefinition = computed(() => findGlossaryEntry(current.value?.answer))
 
 function generateFor(id: ConceptId) { return generators[id]() }
 function weightedConcept(): ConceptId {
@@ -478,6 +484,12 @@ function nextQuestion() {
   current.value = q
   recentIds.value = [...recentIds.value.slice(-3), q.conceptId]
   nextTick(() => answerInput.value?.focus())
+  persistSession()
+}
+function buildPracticeTest(count: number) {
+  const ids: ConceptId[] = []
+  while (ids.length < count) ids.push(...shuffle(concepts.map(c => c[0])))
+  return ids.slice(0, count).map(generateFor)
 }
 function start(selected: Mode) {
   mode.value = selected
@@ -485,9 +497,11 @@ function start(selected: Mode) {
   examIndex.value = 0
   sessionRecords.value = []
   if (selected === 'exam') {
-    const ids = shuffle([...concepts.map(c => c[0]), ...shuffle(concepts.map(c => c[0])).slice(0, 5)]) as ConceptId[]
-    examQuestions.value = ids.map(generateFor)
+    examQuestions.value = buildPracticeTest(50)
     current.value = examQuestions.value[0]
+    submitted.value = false
+    response.value = ''
+    persistSession()
   } else nextQuestion()
 }
 function normalize(v: string) { return v.trim().toLowerCase().replace(/,/g, '') }
@@ -529,6 +543,7 @@ function submit() {
     }
   }
   persist()
+  persistSession()
 }
 function retryQuestion() {
   submitted.value = false
@@ -536,21 +551,25 @@ function retryQuestion() {
   response.value = ''
   showHint.value = false
   nextTick(() => answerInput.value?.focus())
+  persistSession()
 }
 function advanceQuestion() {
+  if (sessionTarget.value && sessionRecords.value.length >= sessionTarget.value) return finishSession()
   if (mode.value === 'exam') {
-    if (examIndex.value === 24) return finishSession()
     examIndex.value++
     current.value = examQuestions.value[examIndex.value]
     submitted.value = false
     response.value = ''
     showHint.value = false
     nextTick(() => answerInput.value?.focus())
+    persistSession()
   } else nextQuestion()
 }
 function finishSession() {
   if (!sessionRecords.value.length) return goHome()
   persist()
+  localStorage.removeItem('chem-grind-active-session')
+  resumeAvailable.value = false
   screen.value = 'summary'
 }
 function resetProgress() {
@@ -558,11 +577,46 @@ function resetProgress() {
   mastery.value = freshMastery()
   stats.value = { attempted: 0, correct: 0, streak: 0, bestStreak: 0 }
   localStorage.removeItem('chem-grind-progress')
+  localStorage.removeItem('chem-grind-active-session')
+  resumeAvailable.value = false
 }
 function persist() {
   localStorage.setItem('chem-grind-progress', JSON.stringify({ mastery: mastery.value, stats: stats.value }))
 }
-function goHome() { screen.value = 'home'; current.value = null }
+function persistSession() {
+  if (screen.value !== 'quiz' || !current.value) return
+  localStorage.setItem('chem-grind-active-session', JSON.stringify({
+    mode: mode.value, current: current.value, examQuestions: examQuestions.value,
+    examIndex: examIndex.value, sessionRecords: sessionRecords.value,
+    submitted: submitted.value, wasCorrect: wasCorrect.value, response: response.value,
+  }))
+  resumeAvailable.value = true
+}
+function resumeSession() {
+  const saved = localStorage.getItem('chem-grind-active-session')
+  if (!saved) return
+  try {
+    const data = JSON.parse(saved)
+    mode.value = data.mode
+    current.value = data.current
+    examQuestions.value = data.examQuestions || []
+    examIndex.value = data.examIndex || 0
+    sessionRecords.value = data.sessionRecords || []
+    submitted.value = Boolean(data.submitted)
+    wasCorrect.value = Boolean(data.wasCorrect)
+    response.value = data.response || ''
+    screen.value = 'quiz'
+    nextTick(() => answerInput.value?.focus())
+  } catch {
+    localStorage.removeItem('chem-grind-active-session')
+    resumeAvailable.value = false
+  }
+}
+function goHome() {
+  persistSession()
+  screen.value = 'home'
+  current.value = null
+}
 function handleKey(e: KeyboardEvent) {
   if (e.key === 'Escape' && showTools.value) { showTools.value = false; return }
   if (showTools.value) return
@@ -581,6 +635,7 @@ onMounted(() => {
       stats.value = { ...stats.value, ...data.stats }
     } catch { /* ignore corrupted progress */ }
   }
+  resumeAvailable.value = Boolean(localStorage.getItem('chem-grind-active-session'))
   window.addEventListener('keydown', handleKey)
 })
 watch(screen, persist)
@@ -595,7 +650,7 @@ watch(screen, persist)
       </button>
       <nav v-if="screen !== 'home'" class="session-stats">
         <span><i class="dot coral" /> Streak <b>{{ stats.streak }}</b></span>
-        <span><i class="dot teal" /> Score <b>{{ progressText }}</b></span>
+        <span><i class="dot teal" /> Progress <b>{{ progressText }}</b></span>
         <span><i class="dot gold" /> Mastery <b>{{ masteryPercent }}%</b></span>
       </nav>
       <button class="tools-button" @click="showTools = true"><span>⊞</span> Tools</button>
@@ -610,7 +665,10 @@ watch(screen, persist)
           <div class="kicker"><span /> CHM 1045C · EXAM 1</div>
           <h1>Less rereading.<br><em>More reps.</em></h1>
           <p>An adaptive chemistry grinder that brings back what you miss—until it sticks.</p>
-          <button class="primary big" @click="start('learn')">Start learning <span>→</span></button>
+          <div class="hero-actions">
+            <button class="primary big" @click="start('learn')">Start 25-question session <span>→</span></button>
+            <button v-if="resumeAvailable" class="resume-button" @click="resumeSession"><b>Resume saved session</b><small>Your exact question and attempts are saved</small></button>
+          </div>
         </div>
         <div class="mastery-card">
           <div class="ring" :style="{ '--progress': `${masteryPercent * 3.6}deg` }">
@@ -631,15 +689,15 @@ watch(screen, persist)
           <button class="mode-card featured" @click="start('learn')">
             <span class="tag">RECOMMENDED</span><span class="mode-icon">↗</span>
             <h3>Learn mode</h3><p>Adaptive practice that targets weak concepts and fades mastered ones.</p>
-            <footer><span>One at a time</span><b>Start →</b></footer>
+            <footer><span>25 questions</span><b>Start →</b></footer>
           </button>
           <button class="mode-card" @click="start('exam')">
-            <span class="mode-icon">25</span><h3>Exam simulation</h3><p>A 25-question mixed test with immediate results and first-attempt scoring.</p>
-            <footer><span>25 questions</span><b>Begin →</b></footer>
+            <span class="mode-icon">50</span><h3>Practice test</h3><p>A full 50-question mixed test with immediate results and first-attempt scoring.</p>
+            <footer><span>50 questions</span><b>Begin →</b></footer>
           </button>
           <button class="mode-card" @click="start('weak')">
             <span class="mode-icon">◎</span><h3>Weak topics</h3><p>Focus your time on concepts with misses or low mastery.</p>
-            <footer><span>Adaptive</span><b>Target →</b></footer>
+            <footer><span>20 questions</span><b>Target →</b></footer>
           </button>
           <button class="mode-card dark" @click="start('grind')">
             <span class="mode-icon">∞</span><h3>Quick grind</h3><p>Endless, fast mixed questions with immediate feedback.</p>
@@ -666,7 +724,7 @@ watch(screen, persist)
     <main v-else-if="screen === 'quiz' && current" class="quiz-wrap">
       <section class="quiz-head">
         <div><div class="kicker"><span /> {{ modeTitle.toUpperCase() }}</div><h1>{{ current.topic }}</h1></div>
-        <div v-if="mode === 'exam'" class="exam-progress"><span>QUESTION {{ examIndex + 1 }} OF 25</span><div><i :style="{ width: `${(examIndex + 1) * 4}%` }" /></div></div>
+        <div v-if="mode === 'exam'" class="exam-progress"><span>QUESTION {{ examIndex + 1 }} OF 50</span><div><i :style="{ width: `${(examIndex + 1) * 2}%` }" /></div></div>
         <div v-else class="concept-meter"><span>CONCEPT MASTERY</span><b>{{ mastery[current.conceptId].score }}%</b><div><i :style="{ width: mastery[current.conceptId].score + '%' }" /></div></div>
       </section>
 
@@ -696,9 +754,13 @@ watch(screen, persist)
           <div v-if="submitted" class="feedback">
             <div class="feedback-icon">{{ wasCorrect ? '✓' : '×' }}</div>
             <div>
-              <strong>{{ wasCorrect ? (currentAttempts > 1 ? `Correct on attempt ${currentAttempts}.` : 'Correct on the first try.') : (currentAttempts > 1 ? `Still incorrect — attempt ${currentAttempts}.` : 'Incorrect — first result recorded.') }}</strong>
-              <p v-if="wasCorrect">{{ current.explanation }}</p>
-              <p v-else>Try the same question again, or move on. Your first-attempt score will not be overwritten.</p>
+              <strong>{{ wasCorrect ? (currentAttempts > 1 ? `Correct on attempt ${currentAttempts}.` : 'Correct.') : (currentAttempts > 1 ? `Still incorrect — attempt ${currentAttempts}.` : 'Incorrect — first result recorded.') }}</strong>
+              <p>{{ current.explanation }}</p>
+              <div v-if="!wasCorrect" class="answer-comparison">
+                <div class="correct-concept"><small>CORRECT ANSWER</small><b>{{ current.answer }} {{ current.unit }}</b><span v-if="correctDefinition">{{ correctDefinition.definition }}</span></div>
+                <div v-if="selectedDefinition && selectedDefinition.id !== correctDefinition?.id" class="selected-concept"><small>YOUR CHOICE</small><b>{{ selectedDefinition.term }}</b><span>{{ selectedDefinition.definition }}</span></div>
+              </div>
+              <p v-if="!wasCorrect" class="attempt-note">Retry it now or move on. Your original first-attempt result stays in the report.</p>
             </div>
           </div>
           <div v-else-if="showHint && current.hint" class="hint"><b>Hint</b> {{ current.hint }}</div>
@@ -709,7 +771,7 @@ watch(screen, persist)
             <span v-else />
             <button v-if="!submitted" class="primary" :disabled="!response" @click="submit">Check answer <span>→</span></button>
             <button v-else-if="!wasCorrect" class="primary retry" @click="retryQuestion">Retry question <span>↻</span></button>
-            <button v-else class="primary" @click="advanceQuestion">{{ mode === 'exam' && examIndex === 24 ? 'Finish & see report' : 'Next question' }} <span>→</span></button>
+            <button v-else class="primary" @click="advanceQuestion">{{ sessionTarget && questionPosition >= sessionTarget ? 'Finish & see report' : 'Next question' }} <span>→</span></button>
           </div>
         </div>
       </section>
@@ -782,6 +844,7 @@ button { color:inherit; }
 .kicker,.section-heading span,.eyebrow { font:500 11px 'DM Mono'; letter-spacing:.16em; text-transform:uppercase; color:var(--teal); }.kicker span { display:inline-block;width:28px;height:2px;background:var(--coral);vertical-align:middle;margin-right:9px; }
 .hero h1 { font-size:clamp(52px,6vw,82px); letter-spacing:-.065em; line-height:.96; margin:22px 0 24px; font-weight:700; }.hero h1 em { color:var(--teal);font-style:normal;position:relative; }.hero h1 em:after { content:'';position:absolute;left:1%;right:0;bottom:-5px;height:8px;background:var(--coral);opacity:.75;clip-path:polygon(0 28%,100% 0,98% 62%,2% 100%); }
 .hero-copy>p { font-size:18px;line-height:1.65;color:var(--muted);max-width:535px;margin-bottom:32px; }
+.hero-actions{display:flex;align-items:stretch;gap:13px;flex-wrap:wrap}.resume-button{border:1px solid var(--teal);background:transparent;padding:10px 16px;text-align:left;cursor:pointer;min-width:205px}.resume-button b,.resume-button small{display:block}.resume-button b{font-size:12px;color:var(--teal)}.resume-button small{font-size:9px;color:var(--muted);margin-top:4px}
 .primary { border:0;background:var(--teal);color:white;padding:15px 22px;font-weight:800;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:32px;box-shadow:4px 4px 0 var(--ink);transition:.15s; }.primary:hover:not(:disabled){transform:translate(-2px,-2px);box-shadow:6px 6px 0 var(--ink)}.primary:disabled{opacity:.38;cursor:not-allowed}.primary.big{padding:18px 25px;font-size:15px;width:max-content;min-width:205px}.primary span{font-size:20px}.secondary{background:transparent;border:1px solid var(--line);padding:14px 18px;cursor:pointer;font-weight:700}.secondary:hover{border-color:var(--teal);color:var(--teal)}
 .mastery-card { min-height:370px;background:var(--ink);color:white;position:relative;display:flex;align-items:center;justify-content:center;gap:34px;overflow:hidden;box-shadow:12px 12px 0 rgba(12,130,125,.2); }.mastery-card:before{content:'';position:absolute;inset:14px;border:1px solid rgba(255,255,255,.12)}
 .ring{--progress:0deg;width:174px;height:174px;border-radius:50%;background:conic-gradient(var(--coral) var(--progress),rgba(255,255,255,.12) 0);display:grid;place-items:center;position:relative}.ring:after{content:'';position:absolute;width:142px;height:142px;border-radius:50%;background:var(--ink)}.ring>div{z-index:1;text-align:center}.ring strong{display:block;font-size:42px;letter-spacing:-.05em}.ring span{font:10px 'DM Mono';letter-spacing:.13em;text-transform:uppercase;color:#9fb2b3}
@@ -792,7 +855,7 @@ button { color:inherit; }
 .quiz-wrap{max-width:930px;margin:0 auto;padding:55px 28px 80px}.quiz-head{display:flex;justify-content:space-between;align-items:end;margin-bottom:25px}.quiz-head h1{font-size:27px;margin:8px 0 0;letter-spacing:-.03em}.concept-meter,.exam-progress{width:230px}.concept-meter span,.exam-progress span{font:9px 'DM Mono';letter-spacing:.12em;color:var(--muted)}.concept-meter b{float:right;font:12px 'DM Mono'}.concept-meter>div,.exam-progress>div{height:5px;background:#dcd9d0;margin-top:8px}.concept-meter i,.exam-progress i{height:100%;display:block;background:var(--teal);transition:.3s}
 .question-card{background:var(--white);border:1px solid var(--line);display:grid;grid-template-columns:72px 1fr;min-height:500px;box-shadow:8px 8px 0 rgba(22,42,45,.08)}.question-card.correct{border-top:4px solid var(--teal)}.question-card.wrong{border-top:4px solid var(--coral)}.question-number{background:var(--ink);color:white;display:flex;justify-content:center;padding-top:33px;font:600 18px 'DM Mono'}.question-body{padding:43px 50px 38px}.question-body h2{font-size:26px;line-height:1.4;letter-spacing:-.025em;margin:13px 0 30px;max-width:680px}.choices{display:grid;grid-template-columns:1fr 1fr;gap:12px}.choices button{background:white;border:1px solid var(--line);padding:15px;text-align:left;display:flex;align-items:center;gap:14px;cursor:pointer;min-height:58px}.choices button:hover:not(:disabled),.choices button.selected{border:2px solid var(--teal);padding:14px;background:#edf7f5}.choices button.answer{border-color:var(--teal);background:#e5f4f0}.choices button.missed{border-color:var(--coral);background:#fff0ec}.choices button>span{width:27px;height:27px;border:1px solid var(--line);display:grid;place-items:center;font:11px 'DM Mono';flex:none}.choices button b{font-size:13px}.number-answer label{border-bottom:2px solid var(--ink);display:flex;max-width:430px;align-items:center}.number-answer input{border:0;background:transparent;outline:0;width:100%;font-size:28px;padding:13px 4px}.number-answer label span{font:14px 'DM Mono';color:var(--muted)}.number-answer small{font:10px 'DM Mono';color:var(--muted);display:block;margin-top:9px}.actions{display:flex;justify-content:space-between;align-items:center;margin-top:34px;padding-top:24px;border-top:1px solid var(--line)}
 .particle-board{margin:-10px 0 26px;border:1px solid var(--line);background:#f7f4ec}.particle-field{min-height:180px;padding:25px;display:grid;grid-template-columns:repeat(4,1fr);align-items:center;justify-items:center;gap:18px;background-image:radial-gradient(rgba(22,42,45,.08) 1px,transparent 1px);background-size:15px 15px}.particle-molecule{display:flex;align-items:center;justify-content:center;filter:drop-shadow(0 3px 2px rgba(22,42,45,.15));transform:rotate(var(--turn,0deg))}.particle-molecule:nth-child(2n){--turn:18deg}.particle-molecule:nth-child(3n){--turn:-22deg}.particle-molecule i{width:31px;height:31px;border-radius:50%;display:grid;place-items:center;font:500 9px 'DM Mono';font-style:normal;border:2px solid var(--white);margin-left:-5px}.particle-molecule i:first-child{margin-left:0}.particle-molecule .atom-A{background:var(--teal);color:white}.particle-molecule .atom-B{background:var(--coral);color:white}.particle-board figcaption{padding:9px 13px;border-top:1px solid var(--line);font:9px 'DM Mono';color:var(--muted);text-align:center}
-.feedback{margin-top:25px;padding:18px;display:flex;gap:14px;background:#edf7f5;border-left:4px solid var(--teal)}.wrong .feedback{background:#fff0ec;border-color:var(--coral)}.feedback-icon{width:28px;height:28px;border-radius:50%;background:var(--teal);color:white;display:grid;place-items:center;font-weight:800}.wrong .feedback-icon{background:var(--coral)}.feedback strong{font-size:14px}.feedback p{font-size:12px;line-height:1.55;margin:3px 0 0;color:var(--muted)}.hint{margin-top:20px;border-left:3px solid var(--gold);padding:12px 15px;background:#faf5e6;font-size:12px;color:var(--muted)}.hint b{color:var(--ink);margin-right:7px}.key-tip{text-align:center;color:#899294;font:10px 'DM Mono';margin-top:24px}.key-tip kbd{background:white;border:1px solid var(--line);padding:3px 6px;box-shadow:0 2px 0 var(--line)}
+.feedback{margin-top:25px;padding:18px;display:flex;gap:14px;background:#edf7f5;border-left:4px solid var(--teal)}.feedback>div:last-child{flex:1}.wrong .feedback{background:#fff0ec;border-color:var(--coral)}.feedback-icon{width:28px;height:28px;border-radius:50%;background:var(--teal);color:white;display:grid;place-items:center;font-weight:800;flex:none}.wrong .feedback-icon{background:var(--coral)}.feedback strong{font-size:14px}.feedback p{font-size:12px;line-height:1.55;margin:3px 0 0;color:var(--muted)}.answer-comparison{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:14px}.answer-comparison>div{background:rgba(255,255,255,.72);border:1px solid var(--line);padding:11px}.answer-comparison .correct-concept{border-color:var(--teal)}.answer-comparison .selected-concept{border-color:var(--coral)}.answer-comparison small,.answer-comparison b,.answer-comparison span{display:block}.answer-comparison small{font:8px 'DM Mono';letter-spacing:.1em;color:var(--muted)}.answer-comparison b{font-size:12px;margin:4px 0}.answer-comparison span{font-size:10px;line-height:1.45;color:var(--muted)}.feedback .attempt-note{margin-top:10px;font-size:10px}.hint{margin-top:20px;border-left:3px solid var(--gold);padding:12px 15px;background:#faf5e6;font-size:12px;color:var(--muted)}.hint b{color:var(--ink);margin-right:7px}.key-tip{text-align:center;color:#899294;font:10px 'DM Mono';margin-top:24px}.key-tip kbd{background:white;border:1px solid var(--line);padding:3px 6px;box-shadow:0 2px 0 var(--line)}
 .summary{max-width:700px;margin:0 auto;padding:65px 28px}.summary-card{text-align:center;background:var(--white);border:1px solid var(--line);padding:48px;box-shadow:10px 10px 0 rgba(12,130,125,.15)}.summary-card>h1{font-size:78px;margin:12px 0 0;color:var(--teal);letter-spacing:-.06em}.summary-card>h1 small{font-size:25px;color:var(--muted)}.summary-card>h2{font-size:27px;margin:0}.summary-card>p{color:var(--muted);font-size:13px}.review-list{display:grid;grid-template-columns:1fr 1fr;text-align:left;gap:6px;margin:30px 0}.review-list div{display:grid;grid-template-columns:20px 1fr auto;gap:8px;padding:10px;background:#f5f3ed;font-size:11px;align-items:center}.review-list .pass>b{color:var(--teal)}.review-list .fail>b{color:var(--coral)}.review-list small{color:var(--muted)}.summary-card>.primary{margin:20px auto 15px}.summary-card>.text-button{display:block;margin:auto}
 .report-metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:27px 0 0}.report-metrics div{background:var(--paper);border:1px solid var(--line);padding:16px 8px}.report-metrics strong{display:block;font-size:25px;color:var(--ink)}.report-metrics span{display:block;margin-top:3px;font:9px 'DM Mono';text-transform:uppercase;color:var(--muted)}.primary.retry{background:var(--coral)}
 .modal-backdrop{position:fixed;inset:0;z-index:50;background:rgba(9,26,28,.72);display:grid;place-items:center;padding:24px;backdrop-filter:blur(5px)}.tools-modal{width:min(820px,100%);max-height:90vh;overflow:auto;background:var(--white);border:1px solid var(--ink);box-shadow:12px 12px 0 rgba(0,0,0,.25)}.tools-modal>header{display:flex;align-items:start;justify-content:space-between;padding:28px 30px 22px;border-bottom:1px solid var(--line)}.tools-modal h2{font-size:25px;margin:7px 0 0;letter-spacing:-.03em}.tools-modal>header>button{border:0;background:var(--ink);color:white;width:34px;height:34px;font-size:22px;cursor:pointer}.tool-columns{display:grid;grid-template-columns:1fr 1fr}.tool-columns article{padding:23px 30px;border-bottom:1px solid var(--line)}.tool-columns article:nth-child(odd){border-right:1px solid var(--line)}.tool-columns h3{font:600 11px 'DM Mono';letter-spacing:.12em;text-transform:uppercase;color:var(--teal);margin:0 0 14px}.tool-columns dl{margin:0}.tool-columns dl div{display:flex;justify-content:space-between;gap:15px;padding:7px 0;border-bottom:1px dotted #d8d5cb;font-size:11px}.tool-columns dt{font-weight:700}.tool-columns dd{margin:0;color:var(--muted);font-family:'DM Mono'}.equations div{align-items:center}.equations dd{color:var(--ink);font-weight:500}.tool-columns p{font-size:11px;color:var(--muted);line-height:1.55}.factor-example{display:flex;align-items:center;gap:13px;background:var(--paper);padding:15px;font:11px 'DM Mono'}.factor-example>span:last-child{display:flex;flex-direction:column;text-align:center}.factor-example u{text-decoration:none;padding:3px 8px}.factor-example u:first-child{border-bottom:1px solid var(--ink)}.tools-modal>footer{display:flex;justify-content:space-between;align-items:center;padding:18px 30px}.tools-modal>footer small{font:9px 'DM Mono';color:var(--muted)}.tools-modal>footer .primary{box-shadow:none;padding:11px 16px}
