@@ -9,11 +9,14 @@
 - Complete 118-element periodic table with atomic number, symbol, name, atomic mass, group, period, category coloring, search, and element detail views.
 - Touch-friendly floating Tools control beside the active quiz.
 - Chemistry-aware tool tabs that establish the subject-tool pattern for future quiz packages.
+- Same-concept retry generation that replaces the revealed question with a fresh variant.
+- Retry-specific distractor regeneration that reshuffles choices and avoids the learner’s previous wrong selection when enough valid alternatives exist.
 - Product documentation covering architecture, persistence, content authority, quality controls, and the multi-subject roadmap.
 
 ### Changed
 
 - Wrong answers now provide the reasoning needed to distinguish closely related concepts while preserving retry and first-attempt metrics.
+- Retry attempts now exercise concept transfer with new wording or numerical values while remaining attached to the original scored miss.
 
 ## 0.3.0 — Resumable practice sessions
 

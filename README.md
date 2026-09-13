@@ -20,6 +20,7 @@ The repository currently contains a working local-first prototype with:
 - 20-question weak-topic sessions
 - Endless quick-grind practice
 - Immediate answer feedback and retry tracking
+- Same-concept retry variants with regenerated values, prompts, and distractors
 - First-attempt accuracy that retries cannot overwrite
 - Concept-level mastery and weak-topic weighting
 - Generated particle diagrams

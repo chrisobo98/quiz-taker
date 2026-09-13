@@ -72,6 +72,7 @@ const wasCorrect = ref(false)
 const examQuestions = ref<Question[]>([])
 const examIndex = ref(0)
 const sessionRecords = ref<AttemptRecord[]>([])
+const recoveryRecordId = ref<string | null>(null)
 const resumeAvailable = ref(false)
 const recentIds = ref<string[]>([])
 const showHint = ref(false)
@@ -462,12 +463,12 @@ const topicGroups = computed(() => {
 const masteryPercent = computed(() => Math.round(Object.values(mastery.value).reduce((sum, x) => sum + x.score, 0) / concepts.length))
 const modeTitle = computed(() => ({ learn: 'Learn mode', exam: 'Practice test', weak: 'Weak topics', grind: 'Quick grind' })[mode.value])
 const sessionTarget = computed(() => ({ learn: 25, exam: 50, weak: 20, grind: 0 })[mode.value])
-const questionPosition = computed(() => mode.value === 'exam' ? examIndex.value + 1 : sessionRecords.value.length + (sessionRecords.value.some(r => r.question.id === current.value?.id) ? 0 : 1))
+const questionPosition = computed(() => mode.value === 'exam' ? examIndex.value + 1 : sessionRecords.value.length + (recoveryRecordId.value || sessionRecords.value.some(r => r.question.id === current.value?.id) ? 0 : 1))
 const progressText = computed(() => sessionTarget.value ? `${Math.min(questionPosition.value, sessionTarget.value)} / ${sessionTarget.value}` : `${sessionRecords.value.length} done`)
 const firstTryCorrect = computed(() => sessionRecords.value.filter(r => r.firstCorrect).length)
 const recoveredCount = computed(() => sessionRecords.value.filter(r => !r.firstCorrect && r.solved).length)
 const sessionAccuracy = computed(() => sessionRecords.value.length ? Math.round(firstTryCorrect.value / sessionRecords.value.length * 100) : 0)
-const currentAttempts = computed(() => sessionRecords.value.find(r => r.question.id === current.value?.id)?.attempts || 0)
+const currentAttempts = computed(() => sessionRecords.value.find(r => r.question.id === (recoveryRecordId.value || current.value?.id))?.attempts || 0)
 const selectedDefinition = computed(() => findGlossaryEntry(response.value))
 const correctDefinition = computed(() => findGlossaryEntry(current.value?.answer))
 const matchingElementNumbers = computed(() => {
@@ -491,6 +492,7 @@ function nextQuestion() {
   submitted.value = false
   response.value = ''
   showHint.value = false
+  recoveryRecordId.value = null
   let q: Question
   let tries = 0
   do { q = generateFor(weightedConcept()); tries++ } while (recentIds.value.includes(q.conceptId) && tries < 5)
@@ -509,6 +511,7 @@ function start(selected: Mode) {
   screen.value = 'quiz'
   examIndex.value = 0
   sessionRecords.value = []
+  recoveryRecordId.value = null
   if (selected === 'exam') {
     examQuestions.value = buildPracticeTest(50)
     current.value = examQuestions.value[0]
@@ -529,7 +532,7 @@ function submit() {
   if (!current.value || !response.value || submitted.value) return
   wasCorrect.value = check(current.value, response.value)
   submitted.value = true
-  let record = sessionRecords.value.find(r => r.question.id === current.value!.id)
+  let record = sessionRecords.value.find(r => r.question.id === (recoveryRecordId.value || current.value!.id))
   const isFirstAttempt = !record
   if (!record) {
     record = { question: current.value, attempts: 0, firstCorrect: wasCorrect.value, solved: false }
@@ -559,6 +562,31 @@ function submit() {
   persistSession()
 }
 function retryQuestion() {
+  if (!current.value) return
+  const previousQuestion = current.value
+  const previousResponse = response.value
+  recoveryRecordId.value ||= previousQuestion.id
+
+  // Generate several same-concept candidates so a retry exercises transfer,
+  // not short-term recall of the answer that was just displayed.
+  const candidates = Array.from({ length: 12 }, () => generateFor(previousQuestion.conceptId as ConceptId))
+  const replacement = (candidates.find(candidate =>
+    candidate.prompt !== previousQuestion.prompt
+      && normalize(String(candidate.answer)) !== normalize(String(previousQuestion.answer))
+      && normalize(String(candidate.answer)) !== normalize(previousResponse),
+  ) || candidates.find(candidate => candidate.prompt !== previousQuestion.prompt) || candidates[0])!
+
+  if (replacement.choices) {
+    const distractorPool = candidates
+      .flatMap(candidate => candidate.choices || [])
+      .map(choice => choice.value)
+      .filter(value => normalize(value) !== normalize(String(replacement.answer)) && normalize(value) !== normalize(previousResponse))
+      .filter((value, index, values) => values.findIndex(other => normalize(other) === normalize(value)) === index)
+    if (distractorPool.length >= 3) replacement.choices = choice(String(replacement.answer), shuffle(distractorPool).slice(0, 3))
+    else replacement.choices = shuffle(replacement.choices)
+  }
+
+  current.value = replacement
   submitted.value = false
   wasCorrect.value = false
   response.value = ''
@@ -571,6 +599,7 @@ function advanceQuestion() {
   if (mode.value === 'exam') {
     examIndex.value++
     current.value = examQuestions.value[examIndex.value]
+    recoveryRecordId.value = null
     submitted.value = false
     response.value = ''
     showHint.value = false
@@ -601,6 +630,7 @@ function persistSession() {
   localStorage.setItem('chem-grind-active-session', JSON.stringify({
     mode: mode.value, current: current.value, examQuestions: examQuestions.value,
     examIndex: examIndex.value, sessionRecords: sessionRecords.value,
+    recoveryRecordId: recoveryRecordId.value,
     submitted: submitted.value, wasCorrect: wasCorrect.value, response: response.value,
   }))
   resumeAvailable.value = true
@@ -615,6 +645,7 @@ function resumeSession() {
     examQuestions.value = data.examQuestions || []
     examIndex.value = data.examIndex || 0
     sessionRecords.value = data.sessionRecords || []
+    recoveryRecordId.value = data.recoveryRecordId || null
     submitted.value = Boolean(data.submitted)
     wasCorrect.value = Boolean(data.wasCorrect)
     response.value = data.response || ''
@@ -774,7 +805,7 @@ watch(screen, persist)
                 <div class="correct-concept"><small>CORRECT ANSWER</small><b>{{ current.answer }} {{ current.unit }}</b><span v-if="correctDefinition">{{ correctDefinition.definition }}</span></div>
                 <div v-if="selectedDefinition && selectedDefinition.id !== correctDefinition?.id" class="selected-concept"><small>YOUR CHOICE</small><b>{{ selectedDefinition.term }}</b><span>{{ selectedDefinition.definition }}</span></div>
               </div>
-              <p v-if="!wasCorrect" class="attempt-note">Retry it now or move on. Your original first-attempt result stays in the report.</p>
+              <p v-if="!wasCorrect" class="attempt-note">Try a fresh version of this concept or move on. Your original first-attempt result stays in the report.</p>
             </div>
           </div>
           <div v-else-if="showHint && current.hint" class="hint"><b>Hint</b> {{ current.hint }}</div>
@@ -784,7 +815,7 @@ watch(screen, persist)
             <button v-else-if="submitted && !wasCorrect" class="secondary" @click="advanceQuestion">Next question</button>
             <span v-else />
             <button v-if="!submitted" class="primary" :disabled="!response" @click="submit">Check answer <span>→</span></button>
-            <button v-else-if="!wasCorrect" class="primary retry" @click="retryQuestion">Retry question <span>↻</span></button>
+            <button v-else-if="!wasCorrect" class="primary retry" @click="retryQuestion">Try new variant <span>↻</span></button>
             <button v-else class="primary" @click="advanceQuestion">{{ sessionTarget && questionPosition >= sessionTarget ? 'Finish & see report' : 'Next question' }} <span>→</span></button>
           </div>
         </div>
