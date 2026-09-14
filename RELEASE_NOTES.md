@@ -16,6 +16,7 @@
 ### Changed
 
 - Wrong answers now provide the reasoning needed to distinguish closely related concepts while preserving retry and first-attempt metrics.
+- Increased selected-element details, category legend, and periodic-table reference-note typography for readability at 100% zoom.
 - Retry attempts now exercise concept transfer with new wording or numerical values while remaining attached to the original scored miss.
 
 ## 0.3.0 — Resumable practice sessions
