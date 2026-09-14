@@ -11,7 +11,14 @@
 - Chemistry-aware tool tabs that establish the subject-tool pattern for future quiz packages.
 - Same-concept retry generation that replaces the revealed question with a fresh variant.
 - Retry-specific distractor regeneration that reshuffles choices and avoids the learner’s previous wrong selection when enough valid alternatives exist.
+- Persistent local history for completed or manually ended sessions, with oldest-first eviction only under browser storage pressure.
+- Detailed question-level reports containing the original response, correct answer, explanation, retries, recovery status, and weak-topic summary.
+- Native Print / Save as PDF reporting with print-specific layouts and no additional dependency.
+- Skip and “I know this” controls with explicit audit exclusion and report visibility.
+- Immediate Change My Mind and same-concept verification options after self-assessing a question as known.
+- Perfectionist achievement for sessions completed without misses or skips.
 - Product documentation covering architecture, persistence, content authority, quality controls, and the multi-subject roadmap.
+- A detailed future implementation plan for optional Supabase accounts, local-first cross-device sync, data migration, conflict handling, and user-owned study history.
 
 ### Changed
 
@@ -19,6 +26,8 @@
 - Increased selected-element details, category legend, and periodic-table reference-note typography for readability at 100% zoom.
 - Corrected dimensional-analysis significant-figure handling so every multiplication/division result uses the least precise non-exact value; defined conversions no longer reduce precision.
 - Retry attempts now exercise concept transfer with new wording or numerical values while remaining attached to the original scored miss.
+- Removed streak displays in favor of completion, mastery, audit accuracy, and meaningful session achievements.
+- Removed the arbitrary 30-report history cap; reports are retained until browser storage pressure requires oldest-first eviction.
 
 ## 0.3.0 — Resumable practice sessions
 

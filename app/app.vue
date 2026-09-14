@@ -6,7 +6,25 @@ import { elementCategories, periodicTable, type ChemicalElement } from './data/p
 type Mode = 'learn' | 'exam' | 'weak' | 'grind'
 type Choice = { label: string; value: string }
 type ParticleDiagram = { molecules: string[]; caption?: string }
-type AttemptRecord = { question: Question; attempts: number; firstCorrect: boolean; solved: boolean }
+type AttemptRecord = {
+  question: Question
+  attempts: number
+  firstCorrect: boolean
+  solved: boolean
+  firstResponse: string
+  retryResponses: string[]
+  excludedFromAudit?: boolean
+  disposition?: 'answered' | 'known' | 'skipped'
+  masteryBefore?: number
+}
+type SessionReport = {
+  id: string
+  quizId: string
+  quizTitle: string
+  mode: Mode
+  completedAt: string
+  records: AttemptRecord[]
+}
 type Question = {
   id: string
   conceptId: string
@@ -64,7 +82,7 @@ const freshMastery = (): MasteryMap => Object.fromEntries(concepts.map(([id]) =>
 const mode = ref<Mode>('learn')
 const screen = ref<'home' | 'quiz' | 'summary'>('home')
 const mastery = ref<MasteryMap>(freshMastery())
-const stats = ref({ attempted: 0, correct: 0, streak: 0, bestStreak: 0 })
+const stats = ref({ attempted: 0, correct: 0 })
 const current = ref<Question | null>(null)
 const response = ref('')
 const submitted = ref(false)
@@ -74,6 +92,8 @@ const examIndex = ref(0)
 const sessionRecords = ref<AttemptRecord[]>([])
 const recoveryRecordId = ref<string | null>(null)
 const resumeAvailable = ref(false)
+const reportHistory = ref<SessionReport[]>([])
+const activeReport = ref<SessionReport | null>(null)
 const recentIds = ref<string[]>([])
 const showHint = ref(false)
 const showTools = ref(false)
@@ -468,10 +488,17 @@ const modeTitle = computed(() => ({ learn: 'Learn mode', exam: 'Practice test', 
 const sessionTarget = computed(() => ({ learn: 25, exam: 50, weak: 20, grind: 0 })[mode.value])
 const questionPosition = computed(() => mode.value === 'exam' ? examIndex.value + 1 : sessionRecords.value.length + (recoveryRecordId.value || sessionRecords.value.some(r => r.question.id === current.value?.id) ? 0 : 1))
 const progressText = computed(() => sessionTarget.value ? `${Math.min(questionPosition.value, sessionTarget.value)} / ${sessionTarget.value}` : `${sessionRecords.value.length} done`)
-const firstTryCorrect = computed(() => sessionRecords.value.filter(r => r.firstCorrect).length)
-const recoveredCount = computed(() => sessionRecords.value.filter(r => !r.firstCorrect && r.solved).length)
-const sessionAccuracy = computed(() => sessionRecords.value.length ? Math.round(firstTryCorrect.value / sessionRecords.value.length * 100) : 0)
+const reportRecords = computed(() => activeReport.value?.records || sessionRecords.value)
+const auditedRecords = computed(() => reportRecords.value.filter(record => !record.excludedFromAudit))
+const firstTryCorrect = computed(() => auditedRecords.value.filter(r => r.firstCorrect).length)
+const recoveredCount = computed(() => auditedRecords.value.filter(r => !r.firstCorrect && r.solved).length)
+const sessionAccuracy = computed(() => auditedRecords.value.length ? Math.round(firstTryCorrect.value / auditedRecords.value.length * 100) : 0)
+const sessionAccuracyLabel = computed(() => auditedRecords.value.length ? String(sessionAccuracy.value) : '—')
+const knownCount = computed(() => reportRecords.value.filter(record => record.disposition === 'known').length)
+const skippedCount = computed(() => reportRecords.value.filter(record => record.disposition === 'skipped').length)
+const earnedPerfectionist = computed(() => reportRecords.value.length > 0 && skippedCount.value === 0 && reportRecords.value.every(record => record.firstCorrect))
 const currentAttempts = computed(() => sessionRecords.value.find(r => r.question.id === (recoveryRecordId.value || current.value?.id))?.attempts || 0)
+const currentDisposition = computed(() => sessionRecords.value.find(r => r.question.id === (recoveryRecordId.value || current.value?.id))?.disposition)
 const selectedDefinition = computed(() => findGlossaryEntry(response.value))
 const correctDefinition = computed(() => findGlossaryEntry(current.value?.answer))
 const matchingElementNumbers = computed(() => {
@@ -479,6 +506,17 @@ const matchingElementNumbers = computed(() => {
   if (!query) return new Set(periodicTable.map(element => element.atomicNumber))
   return new Set(periodicTable.filter(element => element.name.toLowerCase().includes(query) || element.symbol.toLowerCase() === query || String(element.atomicNumber) === query).map(element => element.atomicNumber))
 })
+const reportWeakPoints = computed(() => {
+  const counts = new Map<string, number>()
+  auditedRecords.value.filter(record => !record.firstCorrect).forEach(record => counts.set(record.question.topic, (counts.get(record.question.topic) || 0) + 1))
+  return [...counts.entries()].sort((a, b) => b[1] - a[1])
+})
+const modeLabels: Record<Mode, string> = { learn: 'Learn Mode', exam: 'Practice Test', weak: 'Weak Topics', grind: 'Quick Grind' }
+const formatReportDate = (value: string) => new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value))
+const historicalAccuracy = (report: SessionReport) => {
+  const audited = report.records.filter(record => !record.excludedFromAudit)
+  return audited.length ? `${Math.round(audited.filter(record => record.firstCorrect).length / audited.length * 100)}%` : '—'
+}
 
 function generateFor(id: ConceptId) { return generators[id]() }
 function weightedConcept(): ConceptId {
@@ -514,6 +552,7 @@ function start(selected: Mode) {
   screen.value = 'quiz'
   examIndex.value = 0
   sessionRecords.value = []
+  activeReport.value = null
   recoveryRecordId.value = null
   if (selected === 'exam') {
     examQuestions.value = buildPracticeTest(50)
@@ -538,8 +577,11 @@ function submit() {
   let record = sessionRecords.value.find(r => r.question.id === (recoveryRecordId.value || current.value!.id))
   const isFirstAttempt = !record
   if (!record) {
-    record = { question: current.value, attempts: 0, firstCorrect: wasCorrect.value, solved: false }
+    record = { question: current.value, attempts: 0, firstCorrect: wasCorrect.value, solved: false, firstResponse: response.value, retryResponses: [], disposition: 'answered' }
     sessionRecords.value.push(record)
+  } else {
+    record.retryResponses ||= []
+    record.retryResponses.push(response.value)
   }
   record.attempts++
   if (wasCorrect.value) record.solved = true
@@ -551,18 +593,67 @@ function submit() {
     const m = mastery.value[current.value.conceptId]
     if (wasCorrect.value) {
       stats.value.correct++
-      stats.value.streak++
-      stats.value.bestStreak = Math.max(stats.value.bestStreak, stats.value.streak)
       m.correct++
       m.score = Math.min(100, m.score + (m.score >= 67 ? 11 : 34))
     } else {
-      stats.value.streak = 0
       m.wrong++
       m.score = Math.max(0, m.score - 25)
     }
   }
   persist()
   persistSession()
+}
+function markKnown() {
+  if (!current.value || submitted.value) return
+  const m = mastery.value[current.value.conceptId]
+  const record: AttemptRecord = {
+    question: current.value, attempts: 0, firstCorrect: true, solved: true,
+    firstResponse: 'Marked “I know this”', retryResponses: [], excludedFromAudit: true,
+    disposition: 'known', masteryBefore: m.score,
+  }
+  sessionRecords.value.push(record)
+  stats.value.attempted++
+  stats.value.correct++
+  m.correct++
+  m.score = Math.min(100, m.score + (m.score >= 67 ? 11 : 34))
+  response.value = String(current.value.answer)
+  wasCorrect.value = true
+  submitted.value = true
+  persist()
+  persistSession()
+}
+function skipQuestion() {
+  if (!current.value || submitted.value) return
+  sessionRecords.value.push({
+    question: current.value, attempts: 0, firstCorrect: false, solved: false,
+    firstResponse: 'Skipped', retryResponses: [], excludedFromAudit: true, disposition: 'skipped',
+  })
+  persistSession()
+  advanceQuestion()
+}
+function reconsiderKnown(useFreshVariant = false) {
+  if (!current.value || currentDisposition.value !== 'known') return
+  const recordIndex = sessionRecords.value.findIndex(record => record.question.id === current.value!.id)
+  const record = sessionRecords.value[recordIndex]
+  if (!record) return
+  const m = mastery.value[current.value.conceptId]
+  m.score = record.masteryBefore ?? Math.max(0, m.score - 34)
+  m.correct = Math.max(0, m.correct - 1)
+  stats.value.attempted = Math.max(0, stats.value.attempted - 1)
+  stats.value.correct = Math.max(0, stats.value.correct - 1)
+  sessionRecords.value.splice(recordIndex, 1)
+  if (useFreshVariant) {
+    const original = current.value
+    const candidates = Array.from({ length: 10 }, () => generateFor(original.conceptId as ConceptId))
+    current.value = candidates.find(candidate => candidate.prompt !== original.prompt) || candidates[0]!
+  }
+  response.value = ''
+  wasCorrect.value = false
+  submitted.value = false
+  showHint.value = false
+  persist()
+  persistSession()
+  nextTick(() => answerInput.value?.focus())
 }
 function retryQuestion() {
   if (!current.value) return
@@ -613,14 +704,42 @@ function advanceQuestion() {
 function finishSession() {
   if (!sessionRecords.value.length) return goHome()
   persist()
+  const report: SessionReport = {
+    id: `report-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    quizId: activeQuiz.id,
+    quizTitle: activeQuiz.title,
+    mode: mode.value,
+    completedAt: new Date().toISOString(),
+    records: structuredClone(sessionRecords.value),
+  }
+  activeReport.value = report
+  reportHistory.value = [report, ...reportHistory.value]
+  persistReports()
   localStorage.removeItem('chem-grind-active-session')
   resumeAvailable.value = false
   screen.value = 'summary'
 }
+function persistReports() {
+  let reports = [...reportHistory.value]
+  while (reports.length) {
+    try {
+      localStorage.setItem('quiz-taker-reports-v1', JSON.stringify(reports))
+      reportHistory.value = reports
+      return
+    } catch {
+      reports = reports.slice(0, -1)
+    }
+  }
+}
+function openReport(report: SessionReport) {
+  activeReport.value = report
+  screen.value = 'summary'
+}
+function printReport() { window.print() }
 function resetProgress() {
-  if (!confirm('Reset all mastery, streaks, and answer history?')) return
+  if (!confirm('Reset all mastery, statistics, and answer history?')) return
   mastery.value = freshMastery()
-  stats.value = { attempted: 0, correct: 0, streak: 0, bestStreak: 0 }
+  stats.value = { attempted: 0, correct: 0 }
   localStorage.removeItem('chem-grind-progress')
   localStorage.removeItem('chem-grind-active-session')
   resumeAvailable.value = false
@@ -647,7 +766,11 @@ function resumeSession() {
     current.value = data.current
     examQuestions.value = data.examQuestions || []
     examIndex.value = data.examIndex || 0
-    sessionRecords.value = data.sessionRecords || []
+    sessionRecords.value = (data.sessionRecords || []).map((record: Partial<AttemptRecord>) => ({
+      ...record,
+      firstResponse: record.firstResponse || 'Not recorded in this earlier session',
+      retryResponses: record.retryResponses || [],
+    }))
     recoveryRecordId.value = data.recoveryRecordId || null
     submitted.value = Boolean(data.submitted)
     wasCorrect.value = Boolean(data.wasCorrect)
@@ -682,6 +805,10 @@ onMounted(() => {
       stats.value = { ...stats.value, ...data.stats }
     } catch { /* ignore corrupted progress */ }
   }
+  const savedReports = localStorage.getItem('quiz-taker-reports-v1')
+  if (savedReports) {
+    try { reportHistory.value = JSON.parse(savedReports) } catch { localStorage.removeItem('quiz-taker-reports-v1') }
+  }
   resumeAvailable.value = Boolean(localStorage.getItem('chem-grind-active-session'))
   window.addEventListener('keydown', handleKey)
 })
@@ -696,14 +823,12 @@ watch(screen, persist)
         <span>CHEM <b>GRIND</b></span>
       </button>
       <nav v-if="screen !== 'home'" class="session-stats">
-        <span><i class="dot coral" /> Streak <b>{{ stats.streak }}</b></span>
         <span><i class="dot teal" /> Progress <b>{{ progressText }}</b></span>
         <span><i class="dot gold" /> Mastery <b>{{ masteryPercent }}%</b></span>
       </nav>
       <button class="tools-button" @click="showTools = true"><span>⊞</span> Tools</button>
       <button v-if="screen === 'quiz'" class="exit-button" @click="finishSession">End session</button>
       <button v-else-if="screen !== 'home'" class="exit-button" @click="goHome">Exit report</button>
-      <div v-else class="best">Personal best <b>{{ stats.bestStreak }}</b> <span>⚡</span></div>
     </header>
 
     <main v-if="screen === 'home'" class="home">
@@ -766,6 +891,18 @@ watch(screen, persist)
           </article>
         </div>
       </section>
+      <section class="report-history">
+        <div class="section-heading"><div><span>SAVED LOCALLY</span><h2>Previous reports</h2></div><p>Completed sessions stay on this device while browser storage is available.</p></div>
+        <div v-if="reportHistory.length" class="report-history-grid">
+          <button v-for="report in reportHistory" :key="report.id" @click="openReport(report)">
+            <span>{{ modeLabels[report.mode] }}</span>
+            <strong>{{ historicalAccuracy(report) }}</strong>
+            <small>{{ formatReportDate(report.completedAt) }} · {{ report.records.length }} questions</small>
+            <b>Review report →</b>
+          </button>
+        </div>
+        <div v-else class="empty-reports"><b>No saved reports yet.</b><span>Your next completed or ended session will appear here automatically.</span></div>
+      </section>
     </main>
 
     <main v-else-if="screen === 'quiz' && current" class="quiz-wrap">
@@ -802,7 +939,7 @@ watch(screen, persist)
           <div v-if="submitted" class="feedback">
             <div class="feedback-icon">{{ wasCorrect ? '✓' : '×' }}</div>
             <div>
-              <strong>{{ wasCorrect ? (currentAttempts > 1 ? `Correct on attempt ${currentAttempts}.` : 'Correct.') : (currentAttempts > 1 ? `Still incorrect — attempt ${currentAttempts}.` : 'Incorrect — first result recorded.') }}</strong>
+              <strong>{{ currentDisposition === 'known' ? 'Marked as known — excluded from audit accuracy.' : wasCorrect ? (currentAttempts > 1 ? `Correct on attempt ${currentAttempts}.` : 'Correct.') : (currentAttempts > 1 ? `Still incorrect — attempt ${currentAttempts}.` : 'Incorrect — first result recorded.') }}</strong>
               <p>{{ current.explanation }}</p>
               <div v-if="!wasCorrect" class="answer-comparison">
                 <div class="correct-concept"><small>CORRECT ANSWER</small><b>{{ current.answer }} {{ current.unit }}</b><span v-if="correctDefinition">{{ correctDefinition.definition }}</span></div>
@@ -814,10 +951,12 @@ watch(screen, persist)
           <div v-else-if="showHint && current.hint" class="hint"><b>Hint</b> {{ current.hint }}</div>
 
           <div class="actions">
-            <button v-if="!submitted && mode !== 'exam' && current.hint" class="secondary" @click="showHint = !showHint">{{ showHint ? 'Hide hint' : 'Need a hint?' }}</button>
+            <div v-if="!submitted" class="self-assessment-actions"><button class="plain-action" @click="skipQuestion">Skip</button><button class="plain-action know" @click="markKnown">I know this</button><button v-if="mode !== 'exam' && current.hint" class="plain-action" @click="showHint = !showHint">{{ showHint ? 'Hide hint' : 'Hint' }}</button></div>
+            <div v-else-if="currentDisposition === 'known'" class="self-assessment-actions"><button class="plain-action" @click="reconsiderKnown(false)">Change my mind</button><button class="plain-action" @click="advanceQuestion">Next question</button></div>
             <button v-else-if="submitted && !wasCorrect" class="secondary" @click="advanceQuestion">Next question</button>
             <span v-else />
             <button v-if="!submitted" class="primary" :disabled="!response" @click="submit">Check answer <span>→</span></button>
+            <button v-else-if="currentDisposition === 'known'" class="primary retry" @click="reconsiderKnown(true)">Test with new variant <span>↻</span></button>
             <button v-else-if="!wasCorrect" class="primary retry" @click="retryQuestion">Try new variant <span>↻</span></button>
             <button v-else class="primary" @click="advanceQuestion">{{ sessionTarget && questionPosition >= sessionTarget ? 'Finish & see report' : 'Next question' }} <span>→</span></button>
           </div>
@@ -828,22 +967,36 @@ watch(screen, persist)
 
     <main v-else class="summary">
       <div class="summary-card">
-        <span class="eyebrow">SESSION REPORT · FIRST ATTEMPTS</span>
-        <h1>{{ sessionAccuracy }}<small>%</small></h1>
-        <h2>{{ sessionAccuracy >= 80 ? 'Strong first-pass accuracy.' : 'Now we know what to hit.' }}</h2>
-        <p>{{ firstTryCorrect }} of {{ sessionRecords.length }} correct on the first try · {{ recoveredCount }} recovered through retries.</p>
+        <div class="report-heading"><div><span class="eyebrow">SESSION REPORT · FIRST ATTEMPTS</span><p v-if="activeReport">{{ activeReport.quizTitle }} · {{ modeLabels[activeReport.mode] }} · {{ formatReportDate(activeReport.completedAt) }}</p></div><button class="print-button" @click="printReport">Print / Save PDF</button></div>
+        <h1>{{ sessionAccuracyLabel }}<small v-if="auditedRecords.length">%</small></h1>
+        <h2>{{ !auditedRecords.length ? 'No audited answers this session.' : sessionAccuracy >= 80 ? 'Strong first-pass accuracy.' : 'Now we know what to hit.' }}</h2>
+        <p>{{ firstTryCorrect }} of {{ auditedRecords.length }} audited questions correct on the first try · {{ knownCount }} marked known · {{ skippedCount }} skipped.</p>
         <div class="report-metrics">
           <div><strong>{{ firstTryCorrect }}</strong><span>First-try correct</span></div>
-          <div><strong>{{ sessionRecords.length - firstTryCorrect }}</strong><span>First-try misses</span></div>
+          <div><strong>{{ auditedRecords.length - firstTryCorrect }}</strong><span>First-try misses</span></div>
           <div><strong>{{ recoveredCount }}</strong><span>Recovered</span></div>
+          <div><strong>{{ knownCount }}</strong><span>Marked known</span></div>
+          <div><strong>{{ skippedCount }}</strong><span>Skipped</span></div>
         </div>
-        <div class="review-list">
-          <div v-for="record in sessionRecords" :key="record.question.id" :class="record.firstCorrect ? 'pass' : 'fail'">
-            <b>{{ record.firstCorrect ? '✓' : '×' }}</b><span>{{ record.question.topic }}</span><small>{{ record.firstCorrect ? 'First try' : record.solved ? `Recovered in ${record.attempts}` : 'Needs review' }}</small>
-          </div>
+        <div v-if="earnedPerfectionist" class="achievement"><span>◆</span><div><small>ACHIEVEMENT UNLOCKED</small><strong>Perfectionist</strong><p>Every question was correct or responsibly marked known, with nothing skipped.</p></div></div>
+        <section v-if="reportWeakPoints.length" class="weak-summary">
+          <h3>Weak points from first attempts</h3>
+          <div><span v-for="point in reportWeakPoints" :key="point[0]">{{ point[0] }} <b>{{ point[1] }} miss{{ point[1] === 1 ? '' : 'es' }}</b></span></div>
+        </section>
+        <section class="detailed-review">
+          <h3>Question review</h3>
+          <article v-for="(record, index) in reportRecords" :key="record.question.id" :class="record.disposition === 'skipped' ? 'skipped' : record.firstCorrect ? 'pass' : 'fail'">
+            <header><b>{{ record.disposition === 'skipped' ? '—' : record.disposition === 'known' ? '◆' : record.firstCorrect ? '✓' : '×' }}</b><span>Question {{ index + 1 }} · {{ record.question.topic }}</span><small>{{ record.disposition === 'known' ? 'Marked known · excluded from audit' : record.disposition === 'skipped' ? 'Skipped · excluded from audit' : record.firstCorrect ? 'Correct first try' : record.solved ? `Recovered in ${record.attempts} attempts` : 'Needs review' }}</small></header>
+            <h4>{{ record.question.prompt }}</h4>
+            <div class="answer-lines"><p><span>Your first answer</span><b>{{ record.firstResponse || 'Not recorded' }} {{ record.question.unit }}</b></p><p><span>Correct answer</span><b>{{ record.question.answer }} {{ record.question.unit }}</b></p></div>
+            <p class="report-explanation">{{ record.question.explanation }}</p>
+            <p v-if="record.retryResponses?.length" class="retry-trail"><span>Retry answers</span> {{ record.retryResponses.join(' → ') }}</p>
+          </article>
+        </section>
+        <div class="report-actions">
+          <button class="primary big" @click="start('weak')">Practice weak topics <span>→</span></button>
+          <button class="text-button" @click="goHome">Back to dashboard</button>
         </div>
-        <button class="primary big" @click="start('weak')">Practice weak topics <span>→</span></button>
-        <button class="text-button" @click="goHome">Back to dashboard</button>
       </div>
     </main>
 
@@ -925,16 +1078,35 @@ button { color:inherit; }
 .mastery-copy{width:190px;z-index:1}.mastery-copy small{font:10px 'DM Mono';letter-spacing:.15em;color:#8bb8b5}.mastery-copy h2{font-size:24px;line-height:1.15;margin:12px 0}.mastery-copy p{font-size:13px;color:#aab8b9;line-height:1.6}.molecule{position:absolute;border:1px solid rgba(255,255,255,.1);border-radius:50%}.molecule:before,.molecule:after{content:'';position:absolute;border-radius:50%;background:var(--coral)}.molecule.one{width:80px;height:80px;right:-25px;top:25px}.molecule.one:before{width:11px;height:11px;left:-6px;top:33px}.molecule.two{width:120px;height:120px;left:-45px;bottom:-40px}.molecule.two:after{width:9px;height:9px;right:6px;top:5px;background:var(--gold)}
 .mode-section,.topics{border-top:1px solid var(--line);padding-top:38px}.section-heading{display:flex;justify-content:space-between;align-items:end;margin-bottom:25px}.section-heading h2{font-size:30px;letter-spacing:-.035em;margin:8px 0 0}.section-heading p{color:var(--muted);font-size:13px}.mode-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:80px}.mode-card{text-align:left;border:1px solid var(--line);background:rgba(255,253,248,.65);padding:25px 22px 20px;min-height:260px;cursor:pointer;position:relative;transition:.2s;display:flex;flex-direction:column}.mode-card:hover{transform:translateY(-5px);border-color:var(--teal);box-shadow:0 12px 30px rgba(22,42,45,.08)}.mode-card.featured{border:2px solid var(--teal);background:var(--white)}.mode-card.dark{background:var(--ink);color:white;border-color:var(--ink)}.tag{position:absolute;right:12px;top:12px;background:#dceeea;color:var(--deep);font:9px 'DM Mono';padding:5px 7px;letter-spacing:.08em}.mode-icon{font:700 20px 'DM Mono';color:var(--coral);height:48px;display:block}.mode-card h3{font-size:20px;margin:12px 0 9px}.mode-card p{font-size:13px;line-height:1.55;color:var(--muted);margin:0}.dark p{color:#9fb0b1}.mode-card footer{margin-top:auto;padding-top:20px;border-top:1px solid var(--line);display:flex;justify-content:space-between;font:11px 'DM Mono';color:var(--muted)}.mode-card footer b{color:var(--teal)}.dark footer{border-color:#385053}.dark footer b{color:#6bd1c9}
 .topics{padding-bottom:30px}.topic-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:15px}.topic-grid article{background:rgba(255,253,248,.6);border:1px solid var(--line);padding:22px}.topic-grid article h3{font-size:12px;text-transform:uppercase;letter-spacing:.13em;margin:0 0 18px;color:var(--teal)}.concept-row{display:grid;grid-template-columns:210px 1fr 38px;align-items:center;gap:13px;padding:9px 0}.concept-row>div:first-child span{display:block;font-size:12px;font-weight:700}.concept-row small{display:block;color:#9a9f9b;font-size:9px;margin-top:2px}.bar{height:5px;background:#dfddd5}.bar i{height:100%;display:block;background:var(--teal);transition:.4s}.concept-row>b{font:10px 'DM Mono';text-align:right}.text-button{border:0;background:none;color:var(--teal);text-decoration:underline;text-underline-offset:4px;cursor:pointer;font-size:12px}
+.report-history{border-top:1px solid var(--line);padding-top:38px;margin-top:50px}.report-history-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.report-history-grid>button{border:1px solid var(--line);background:var(--white);padding:18px;text-align:left;cursor:pointer;display:grid;grid-template-columns:1fr auto;gap:5px 12px}.report-history-grid>button:hover{border-color:var(--teal)}.report-history-grid span{font:9px 'DM Mono';text-transform:uppercase;color:var(--teal)}.report-history-grid strong{grid-row:1/3;grid-column:2;font-size:27px}.report-history-grid small{font-size:10px;color:var(--muted)}.report-history-grid b{grid-column:1/-1;font-size:11px;margin-top:9px}.empty-reports{border:1px dashed var(--line);padding:25px;display:flex;flex-direction:column;gap:4px}.empty-reports b{font-size:13px}.empty-reports span{font-size:11px;color:var(--muted)}
 .session-stats{display:flex;gap:28px;margin-left:auto;margin-right:22px}.session-stats span{font:10px 'DM Mono';text-transform:uppercase;color:var(--muted);letter-spacing:.08em}.session-stats b{color:var(--ink);margin-left:5px;font-size:12px}.dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:3px}.coral{background:var(--coral)}.teal{background:var(--teal)}.gold{background:var(--gold)}.tools-button{margin-left:auto;background:var(--white);border:1px solid var(--line);padding:9px 13px;font-size:11px;font-weight:800;cursor:pointer}.session-stats+.tools-button{margin-left:0}.tools-button span{color:var(--teal);font-size:15px;margin-right:4px}.exit-button{background:none;border:1px solid var(--line);border-left:0;padding:9px 13px;font-size:11px;cursor:pointer}
 .quiz-wrap{max-width:930px;margin:0 auto;padding:55px 28px 80px}.quiz-head{display:flex;justify-content:space-between;align-items:end;margin-bottom:25px}.quiz-head h1{font-size:27px;margin:8px 0 0;letter-spacing:-.03em}.concept-meter,.exam-progress{width:230px}.concept-meter span,.exam-progress span{font:9px 'DM Mono';letter-spacing:.12em;color:var(--muted)}.concept-meter b{float:right;font:12px 'DM Mono'}.concept-meter>div,.exam-progress>div{height:5px;background:#dcd9d0;margin-top:8px}.concept-meter i,.exam-progress i{height:100%;display:block;background:var(--teal);transition:.3s}
 .floating-tools{position:fixed;right:max(18px,calc((100vw - 1080px)/2));top:145px;z-index:10;width:64px;height:64px;border-radius:50%;border:0;background:var(--coral);color:white;box-shadow:4px 4px 0 var(--ink);display:grid;place-items:center;align-content:center;cursor:pointer;transition:.15s}.floating-tools:hover{transform:translate(-2px,-2px);box-shadow:6px 6px 0 var(--ink)}.floating-tools span{font-size:21px;line-height:19px}.floating-tools b{font:8px 'DM Mono';text-transform:uppercase;letter-spacing:.08em}
 .question-card{background:var(--white);border:1px solid var(--line);display:grid;grid-template-columns:72px 1fr;min-height:500px;box-shadow:8px 8px 0 rgba(22,42,45,.08)}.question-card.correct{border-top:4px solid var(--teal)}.question-card.wrong{border-top:4px solid var(--coral)}.question-number{background:var(--ink);color:white;display:flex;justify-content:center;padding-top:33px;font:600 18px 'DM Mono'}.question-body{padding:43px 50px 38px}.question-body h2{font-size:26px;line-height:1.4;letter-spacing:-.025em;margin:13px 0 30px;max-width:680px}.choices{display:grid;grid-template-columns:1fr 1fr;gap:12px}.choices button{background:white;border:1px solid var(--line);padding:15px;text-align:left;display:flex;align-items:center;gap:14px;cursor:pointer;min-height:58px}.choices button:hover:not(:disabled),.choices button.selected{border:2px solid var(--teal);padding:14px;background:#edf7f5}.choices button.answer{border-color:var(--teal);background:#e5f4f0}.choices button.missed{border-color:var(--coral);background:#fff0ec}.choices button>span{width:27px;height:27px;border:1px solid var(--line);display:grid;place-items:center;font:11px 'DM Mono';flex:none}.choices button b{font-size:13px}.number-answer label{border-bottom:2px solid var(--ink);display:flex;max-width:430px;align-items:center}.number-answer input{border:0;background:transparent;outline:0;width:100%;font-size:28px;padding:13px 4px}.number-answer label span{font:14px 'DM Mono';color:var(--muted)}.number-answer small{font:10px 'DM Mono';color:var(--muted);display:block;margin-top:9px}.actions{display:flex;justify-content:space-between;align-items:center;margin-top:34px;padding-top:24px;border-top:1px solid var(--line)}
+.self-assessment-actions{display:flex;align-items:center;gap:7px;flex-wrap:wrap}.plain-action{border:0;background:none;padding:8px 6px;color:var(--muted);font-size:10px;text-decoration:underline;text-underline-offset:3px;cursor:pointer}.plain-action:hover{color:var(--ink)}.plain-action.know{border:1px solid var(--teal);color:var(--teal);text-decoration:none;padding:8px 10px;font-weight:800}
 .particle-board{margin:-10px 0 26px;border:1px solid var(--line);background:#f7f4ec}.particle-field{min-height:180px;padding:25px;display:grid;grid-template-columns:repeat(4,1fr);align-items:center;justify-items:center;gap:18px;background-image:radial-gradient(rgba(22,42,45,.08) 1px,transparent 1px);background-size:15px 15px}.particle-molecule{display:flex;align-items:center;justify-content:center;filter:drop-shadow(0 3px 2px rgba(22,42,45,.15));transform:rotate(var(--turn,0deg))}.particle-molecule:nth-child(2n){--turn:18deg}.particle-molecule:nth-child(3n){--turn:-22deg}.particle-molecule i{width:31px;height:31px;border-radius:50%;display:grid;place-items:center;font:500 9px 'DM Mono';font-style:normal;border:2px solid var(--white);margin-left:-5px}.particle-molecule i:first-child{margin-left:0}.particle-molecule .atom-A{background:var(--teal);color:white}.particle-molecule .atom-B{background:var(--coral);color:white}.particle-board figcaption{padding:9px 13px;border-top:1px solid var(--line);font:9px 'DM Mono';color:var(--muted);text-align:center}
 .feedback{margin-top:25px;padding:18px;display:flex;gap:14px;background:#edf7f5;border-left:4px solid var(--teal)}.feedback>div:last-child{flex:1}.wrong .feedback{background:#fff0ec;border-color:var(--coral)}.feedback-icon{width:28px;height:28px;border-radius:50%;background:var(--teal);color:white;display:grid;place-items:center;font-weight:800;flex:none}.wrong .feedback-icon{background:var(--coral)}.feedback strong{font-size:14px}.feedback p{font-size:12px;line-height:1.55;margin:3px 0 0;color:var(--muted)}.answer-comparison{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:14px}.answer-comparison>div{background:rgba(255,255,255,.72);border:1px solid var(--line);padding:11px}.answer-comparison .correct-concept{border-color:var(--teal)}.answer-comparison .selected-concept{border-color:var(--coral)}.answer-comparison small,.answer-comparison b,.answer-comparison span{display:block}.answer-comparison small{font:8px 'DM Mono';letter-spacing:.1em;color:var(--muted)}.answer-comparison b{font-size:12px;margin:4px 0}.answer-comparison span{font-size:10px;line-height:1.45;color:var(--muted)}.feedback .attempt-note{margin-top:10px;font-size:10px}.hint{margin-top:20px;border-left:3px solid var(--gold);padding:12px 15px;background:#faf5e6;font-size:12px;color:var(--muted)}.hint b{color:var(--ink);margin-right:7px}.key-tip{text-align:center;color:#899294;font:10px 'DM Mono';margin-top:24px}.key-tip kbd{background:white;border:1px solid var(--line);padding:3px 6px;box-shadow:0 2px 0 var(--line)}
-.summary{max-width:700px;margin:0 auto;padding:65px 28px}.summary-card{text-align:center;background:var(--white);border:1px solid var(--line);padding:48px;box-shadow:10px 10px 0 rgba(12,130,125,.15)}.summary-card>h1{font-size:78px;margin:12px 0 0;color:var(--teal);letter-spacing:-.06em}.summary-card>h1 small{font-size:25px;color:var(--muted)}.summary-card>h2{font-size:27px;margin:0}.summary-card>p{color:var(--muted);font-size:13px}.review-list{display:grid;grid-template-columns:1fr 1fr;text-align:left;gap:6px;margin:30px 0}.review-list div{display:grid;grid-template-columns:20px 1fr auto;gap:8px;padding:10px;background:#f5f3ed;font-size:11px;align-items:center}.review-list .pass>b{color:var(--teal)}.review-list .fail>b{color:var(--coral)}.review-list small{color:var(--muted)}.summary-card>.primary{margin:20px auto 15px}.summary-card>.text-button{display:block;margin:auto}
-.report-metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:27px 0 0}.report-metrics div{background:var(--paper);border:1px solid var(--line);padding:16px 8px}.report-metrics strong{display:block;font-size:25px;color:var(--ink)}.report-metrics span{display:block;margin-top:3px;font:9px 'DM Mono';text-transform:uppercase;color:var(--muted)}.primary.retry{background:var(--coral)}
+.summary{max-width:920px;margin:0 auto;padding:50px 28px}.summary-card{text-align:center;background:var(--white);border:1px solid var(--line);padding:40px 48px;box-shadow:10px 10px 0 rgba(12,130,125,.15)}.report-heading{display:flex;justify-content:space-between;align-items:start;text-align:left}.report-heading p{font:9px 'DM Mono';color:var(--muted);margin:7px 0}.print-button{border:1px solid var(--ink);background:var(--white);padding:11px 14px;font-size:11px;font-weight:800;cursor:pointer}.summary-card>h1{font-size:78px;margin:12px 0 0;color:var(--teal);letter-spacing:-.06em}.summary-card>h1 small{font-size:25px;color:var(--muted)}.summary-card>h2{font-size:27px;margin:0}.summary-card>p{color:var(--muted);font-size:13px}.weak-summary{text-align:left;margin:26px 0}.weak-summary h3,.detailed-review>h3{font:600 11px 'DM Mono';letter-spacing:.12em;text-transform:uppercase;color:var(--teal)}.weak-summary>div{display:flex;flex-wrap:wrap;gap:7px}.weak-summary span{background:#fff0ec;border:1px solid #f1c4bb;padding:8px 10px;font-size:10px}.weak-summary b{margin-left:6px;color:var(--coral)}.detailed-review{text-align:left;margin-top:30px}.detailed-review article{border:1px solid var(--line);margin:10px 0;padding:17px;break-inside:avoid}.detailed-review article.fail{border-left:4px solid var(--coral)}.detailed-review article.pass{border-left:4px solid var(--teal)}.detailed-review article>header{display:grid;grid-template-columns:20px 1fr auto;align-items:center;gap:8px;font-size:10px}.detailed-review article.fail>header>b{color:var(--coral)}.detailed-review article.pass>header>b{color:var(--teal)}.detailed-review article>header small{color:var(--muted)}.detailed-review h4{font-size:14px;line-height:1.45;margin:13px 0}.answer-lines{display:grid;grid-template-columns:1fr 1fr;gap:8px}.answer-lines p{background:var(--paper);padding:9px;margin:0}.answer-lines span,.retry-trail span{display:block;font:8px 'DM Mono';text-transform:uppercase;color:var(--muted);margin-bottom:3px}.answer-lines b{font-size:11px}.report-explanation{font-size:10px;line-height:1.55;color:var(--muted);margin:10px 0 0}.retry-trail{font-size:10px;color:var(--ink);border-top:1px dotted var(--line);padding-top:8px}.report-actions{display:flex;align-items:center;justify-content:center;gap:25px;margin-top:25px}.report-actions .primary{margin:0}
+.report-metrics{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin:27px 0 0}.report-metrics div{background:var(--paper);border:1px solid var(--line);padding:16px 8px}.report-metrics strong{display:block;font-size:25px;color:var(--ink)}.report-metrics span{display:block;margin-top:3px;font:9px 'DM Mono';text-transform:uppercase;color:var(--muted)}.primary.retry{background:var(--coral)}.achievement{display:flex;align-items:center;gap:15px;text-align:left;margin:20px 0;padding:16px;background:#faf2d7;border:1px solid var(--gold)}.achievement>span{width:42px;height:42px;display:grid;place-items:center;background:var(--gold);color:white;font-size:20px;transform:rotate(45deg)}.achievement>span::first-letter{transform:rotate(-45deg)}.achievement small,.achievement strong{display:block}.achievement small{font:8px 'DM Mono';letter-spacing:.12em;color:#8a6b1f}.achievement strong{font-size:18px}.achievement p{font-size:10px;color:var(--muted);margin:2px 0}.detailed-review article.skipped{border-left:4px solid var(--gold)}
 .modal-backdrop{position:fixed;inset:0;z-index:50;background:rgba(9,26,28,.72);display:grid;place-items:center;padding:24px;backdrop-filter:blur(5px)}.tools-modal{width:min(1180px,100%);max-height:92vh;overflow:auto;background:var(--white);border:1px solid var(--ink);box-shadow:12px 12px 0 rgba(0,0,0,.25)}.tools-modal>header{display:flex;align-items:start;justify-content:space-between;padding:22px 30px 18px;border-bottom:1px solid var(--line)}.tools-modal h2{font-size:25px;margin:7px 0 0;letter-spacing:-.03em}.tools-modal>header>button{border:0;background:var(--ink);color:white;width:34px;height:34px;font-size:22px;cursor:pointer}.tools-tabs{display:flex;padding:0 30px;border-bottom:1px solid var(--line);background:#f5f2ea}.tools-tabs button{border:0;border-bottom:3px solid transparent;background:none;padding:14px 16px 11px;font:600 10px 'DM Mono';text-transform:uppercase;letter-spacing:.08em;cursor:pointer;color:var(--muted)}.tools-tabs button.active{color:var(--teal);border-color:var(--teal)}.tool-columns{display:grid;grid-template-columns:1fr 1fr}.tool-columns article{padding:23px 30px;border-bottom:1px solid var(--line)}.tool-columns article:nth-child(odd){border-right:1px solid var(--line)}.tool-columns h3{font:600 11px 'DM Mono';letter-spacing:.12em;text-transform:uppercase;color:var(--teal);margin:0 0 14px}.tool-columns dl{margin:0}.tool-columns dl div{display:flex;justify-content:space-between;gap:15px;padding:7px 0;border-bottom:1px dotted #d8d5cb;font-size:11px}.tool-columns dt{font-weight:700}.tool-columns dd{margin:0;color:var(--muted);font-family:'DM Mono'}.equations div{align-items:center}.equations dd{color:var(--ink);font-weight:500}.tool-columns p{font-size:11px;color:var(--muted);line-height:1.55}.factor-example{display:flex;align-items:center;gap:13px;background:var(--paper);padding:15px;font:11px 'DM Mono'}.factor-example>span:last-child{display:flex;flex-direction:column;text-align:center}.factor-example u{text-decoration:none;padding:3px 8px}.factor-example u:first-child{border-bottom:1px solid var(--ink)}.tools-modal>footer{display:flex;justify-content:space-between;align-items:center;padding:14px 30px;border-top:1px solid var(--line)}.tools-modal>footer small{font:9px 'DM Mono';color:var(--muted)}.tools-modal>footer .primary{box-shadow:none;padding:11px 16px}
 .periodic-panel{padding:19px 24px 16px}.periodic-toolbar{display:flex;justify-content:space-between;align-items:end;margin-bottom:14px}.periodic-toolbar h3{margin:5px 0 0;font-size:20px}.periodic-toolbar label{display:flex;align-items:center;border:1px solid var(--line);background:white}.periodic-toolbar label span{font:9px 'DM Mono';text-transform:uppercase;padding:0 10px;color:var(--muted)}.periodic-toolbar input{border:0;border-left:1px solid var(--line);outline:0;padding:9px;width:190px;font-size:11px}.periodic-scroll{overflow-x:auto;padding-bottom:8px}.periodic-grid{min-width:1040px;display:grid;grid-template-columns:repeat(18,1fr);grid-template-rows:repeat(7,61px) 12px repeat(2,61px);gap:3px}.element-tile{border:1px solid rgba(22,42,45,.25);padding:3px;background:#eef2ef;display:grid;grid-template-columns:1fr auto;grid-template-rows:auto 1fr auto;text-align:left;cursor:pointer;transition:.12s;min-width:0}.element-tile:hover,.element-tile.selected{outline:2px solid var(--ink);z-index:2;transform:scale(1.08)}.element-tile.dimmed{opacity:.16}.element-tile small{font:7px 'DM Mono'}.element-tile strong{grid-column:1/-1;font-size:17px;line-height:18px;align-self:center}.element-tile span{font-size:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.element-tile em{font:6px 'DM Mono';font-style:normal;text-align:right}.category-alkali{background:#f5c9bd}.category-alkaline{background:#f5dfa4}.category-transition{background:#d5e5e1}.category-post-transition{background:#dce3c0}.category-metalloid{background:#bfe0cf}.category-nonmetal{background:#c9e8e6}.category-halogen{background:#b9d9ee}.category-noble{background:#d8cef0}.category-lanthanide{background:#f3d2df}.category-actinide{background:#e5c8b3}.element-detail{min-height:78px;margin-top:12px;border:1px solid var(--line);padding:13px 17px;display:flex;align-items:center;gap:17px}.element-detail>strong{font-size:38px}.element-detail h4{margin:0;font-size:19px}.element-detail p{margin:5px 0 0;font:12px/1.5 'DM Mono';color:var(--muted)}.element-detail>button{margin-left:auto;border:0;background:none;text-decoration:underline;font-size:13px;cursor:pointer}.element-detail>p{font:13px/1.5 Manrope,sans-serif;color:var(--muted)}.periodic-legend{display:flex;flex-wrap:wrap;gap:10px 20px;margin-top:16px}.periodic-legend span{background:none;display:flex;align-items:center;gap:7px;font:11px 'DM Mono';color:var(--ink)}.periodic-legend i{width:14px;height:14px;background:inherit;border:1px solid rgba(22,42,45,.25);flex:none}.periodic-legend span.category-alkali i{background:#f5c9bd}.periodic-legend span.category-alkaline i{background:#f5dfa4}.periodic-legend span.category-transition i{background:#d5e5e1}.periodic-legend span.category-post-transition i{background:#dce3c0}.periodic-legend span.category-metalloid i{background:#bfe0cf}.periodic-legend span.category-nonmetal i{background:#c9e8e6}.periodic-legend span.category-halogen i{background:#b9d9ee}.periodic-legend span.category-noble i{background:#d8cef0}.periodic-legend span.category-lanthanide i{background:#f3d2df}.periodic-legend span.category-actinide i{background:#e5c8b3}.periodic-note{font:11px/1.5 'DM Mono';color:var(--muted);margin:14px 0 0}
 @media(max-width:900px){.hero{grid-template-columns:1fr;gap:45px}.mode-grid{grid-template-columns:1fr 1fr}.session-stats span:nth-child(2){display:none}.topic-grid{grid-template-columns:1fr}.mastery-card{min-height:310px}}
 @media(max-width:620px){.topbar{height:65px;padding:0 18px}.brand span:last-child{display:none}.best{display:none}.tools-button{margin-left:auto}.session-stats{gap:10px;margin-right:8px}.session-stats span:nth-child(3){display:none}.tools-button{padding:7px 9px}.exit-button{padding:7px}.home{padding:45px 18px}.hero{padding-bottom:58px}.hero h1{font-size:49px}.mastery-card{flex-direction:column;gap:5px;padding:30px;text-align:center}.mastery-copy{width:230px}.mode-grid{grid-template-columns:1fr}.section-heading>p{display:none}.topic-grid{display:block}.topic-grid article{margin-bottom:10px}.concept-row{grid-template-columns:1fr 70px 32px}.quiz-wrap{padding:35px 14px}.quiz-head{align-items:start}.concept-meter,.exam-progress{width:120px}.question-card{grid-template-columns:1fr}.question-number{display:none}.question-body{padding:30px 22px}.question-body h2{font-size:21px}.choices{grid-template-columns:1fr}.particle-field{grid-template-columns:repeat(3,1fr);padding:20px 12px}.actions{gap:12px}.actions .primary{gap:15px}.review-list{grid-template-columns:1fr}.summary-card{padding:35px 20px}.tool-columns{grid-template-columns:1fr}.tool-columns article:nth-child(odd){border-right:0}.tools-modal>header,.tool-columns article{padding-left:20px;padding-right:20px}.tools-modal>footer{padding:15px 20px;gap:14px}}
+@media(max-width:760px){.report-history-grid{grid-template-columns:1fr}.report-heading{gap:15px}.print-button{flex:none}.answer-lines{grid-template-columns:1fr}.detailed-review article>header{grid-template-columns:20px 1fr}.detailed-review article>header small{grid-column:2}.report-actions{flex-direction:column}.report-metrics{grid-template-columns:repeat(2,1fr)}.report-metrics span{font-size:8px}.actions{align-items:flex-end}.self-assessment-actions{max-width:55%}}
+@media print{
+  @page{margin:.55in}
+  body,.app-shell{background:white!important;color:#111}
+  .topbar,.print-button,.report-actions,.modal-backdrop{display:none!important}
+  .summary{max-width:none;padding:0;margin:0}
+  .summary-card{border:0;box-shadow:none;padding:0;text-align:left}
+  .report-heading{border-bottom:2px solid #111;padding-bottom:12px}
+  .summary-card>h1{font-size:52px;margin-top:18px}
+  .summary-card>h2{font-size:21px}
+  .report-metrics{max-width:520px}
+  .report-metrics div,.answer-lines p{background:#f2f2f2!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  .weak-summary span{background:white!important;border-color:#999}
+  .detailed-review article{page-break-inside:avoid;break-inside:avoid;border-color:#999}
+  .detailed-review article.fail{border-left-color:#111}.detailed-review article.pass{border-left-color:#777}
+  .detailed-review h4{font-size:12pt}.report-explanation,.answer-lines b,.retry-trail{font-size:9pt}
+}
 </style>
