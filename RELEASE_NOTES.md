@@ -17,6 +17,7 @@
 
 - Wrong answers now provide the reasoning needed to distinguish closely related concepts while preserving retry and first-attempt metrics.
 - Increased selected-element details, category legend, and periodic-table reference-note typography for readability at 100% zoom.
+- Corrected dimensional-analysis significant-figure handling so every multiplication/division result uses the least precise non-exact value; defined conversions no longer reduce precision.
 - Retry attempts now exercise concept transfer with new wording or numerical values while remaining attached to the original scored miss.
 
 ## 0.3.0 — Resumable practice sessions

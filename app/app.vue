@@ -90,6 +90,7 @@ const pick = <T,>(arr: readonly T[]) => arr[Math.floor(Math.random() * arr.lengt
 const shuffle = <T,>(arr: T[]) => [...arr].sort(() => Math.random() - 0.5)
 const n = (min: number, max: number) => Math.floor(Math.random() * (max - min + 1)) + min
 const decimal = (min: number, max: number, places = 1) => Number((min + Math.random() * (max - min)).toFixed(places))
+const roundToSig = (value: number, significantFigures: number) => Number(value.toPrecision(significantFigures))
 const choice = (answer: string, wrong: string[]) => shuffle([answer, ...wrong]).map(v => ({ label: v, value: v }))
 const qid = (concept: string) => `${concept}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
 const mcq = (conceptId: ConceptId, prompt: string, answer: string, wrong: string[], explanation: string, eyebrow = 'Choose one', hint?: string): Question => ({
@@ -208,32 +209,34 @@ const generators: Record<ConceptId, () => Question> = {
   DIMENSIONAL_ANALYSIS: () => {
     const kind = n(0, 6)
     if (kind === 0) {
-      const miles = decimal(2, 12, 1), answer = miles * 1.609
-      return numeric('DIMENSIONAL_ANALYSIS', `A route is ${miles} miles long. Convert it to kilometers. (1 mi = 1.609 km)`, Number(answer.toPrecision(4)), 'km', `Set up ${miles} mi × (1.609 km / 1 mi). Miles cancel, giving ${Number(answer.toPrecision(4))} km.`, answer * .002, 'Put miles in the denominator so the starting unit cancels.')
+      const miles = decimal(2, 9.9, 2), milesLabel = miles.toFixed(2), raw = miles * 1.609, answer = roundToSig(raw, 3)
+      return numeric('DIMENSIONAL_ANALYSIS', `A route is ${milesLabel} miles long. Convert it to kilometers. (1 mi = 1.609 km)`, answer, 'km', `Set up ${milesLabel} mi × (1.609 km / 1 mi). Miles cancel. The measurement has 3 significant figures and the conversion has 4, so ${raw} rounds to ${answer} km.`, Math.abs(answer) * .001, 'Put miles in the denominator so the starting unit cancels.')
     }
     if (kind === 1) {
-      const inches = decimal(8, 40, 1), answer = inches * 2.54
-      return numeric('DIMENSIONAL_ANALYSIS', `Convert ${inches} inches to centimeters. (1 in = 2.54 cm exactly)`, Number(answer.toPrecision(3)), 'cm', `${inches} in × (2.54 cm / 1 in) = ${Number(answer.toPrecision(3))} cm. The defined conversion does not limit significant figures.`, answer * .002, 'Arrange the factor so inches cancel.')
+      const inches = decimal(10, 40, 1), inchesLabel = inches.toFixed(1), raw = inches * 2.54, answer = roundToSig(raw, 3)
+      return numeric('DIMENSIONAL_ANALYSIS', `Convert ${inchesLabel} inches to centimeters. (1 in = 2.54 cm exactly)`, answer, 'cm', `${inchesLabel} in × (2.54 cm / 1 in) = ${answer} cm. The input has 3 significant figures; the defined conversion is exact and does not limit the result.`, Math.abs(answer) * .001, 'Arrange the factor so inches cancel.')
     }
     if (kind === 2) {
-      const cm2 = n(120, 850), answer = cm2 * (1 / 100) ** 2
-      return numeric('DIMENSIONAL_ANALYSIS', `Convert ${cm2} cm² to m².`, Number(answer.toPrecision(3)), 'm²', `${cm2} cm² × (1 m / 100 cm)² = ${Number(answer.toPrecision(3))} m². The conversion factor must be squared.`, answer * .002, 'For area, square both the unit and its conversion factor.')
+      let cm2 = n(121, 898)
+      while (String(cm2).includes('0')) cm2 = n(121, 898)
+      const raw = cm2 * (1 / 100) ** 2, answer = roundToSig(raw, 3)
+      return numeric('DIMENSIONAL_ANALYSIS', `Convert ${cm2} cm² to m².`, answer, 'm²', `${cm2} cm² × (1 m / 100 cm)² = ${answer} m². The input has 3 significant figures; the exact metric factor is squared and does not limit the result.`, Math.abs(answer) * .001, 'For area, square both the unit and its conversion factor.')
     }
     if (kind === 3) {
-      const pounds = decimal(1.5, 18, 2), answer = pounds * 453.6
-      return numeric('DIMENSIONAL_ANALYSIS', `A sample has a mass of ${pounds.toFixed(2)} lb. Convert it to grams.`, Number(answer.toPrecision(4)), 'g', `${pounds.toFixed(2)} lb × (453.6 g / 1 lb) = ${Number(answer.toPrecision(4))} g. Pounds cancel.`, answer * .002, 'Use 1 lb = 453.6 g from Tools and arrange it so lb cancels.')
+      const pounds = decimal(10, 18, 2), poundsLabel = pounds.toFixed(2), raw = pounds * 453.6, answer = roundToSig(raw, 4)
+      return numeric('DIMENSIONAL_ANALYSIS', `A sample has a mass of ${poundsLabel} lb. Convert it to grams.`, answer, 'g', `${poundsLabel} lb × (453.6 g / 1 lb) = ${answer} g. Both non-exact values have 4 significant figures.`, Math.abs(answer) * .001, 'Use 1 lb = 453.6 g from Tools and arrange it so lb cancels.')
     }
     if (kind === 4) {
-      const liters = decimal(1.5, 12, 2), answer = liters / .9464
-      return numeric('DIMENSIONAL_ANALYSIS', `Convert ${liters.toFixed(2)} L to quarts.`, Number(answer.toPrecision(3)), 'qt', `${liters.toFixed(2)} L × (1 qt / 0.9464 L) = ${Number(answer.toPrecision(3))} qt.`, answer * .002, 'Use 1 qt = 0.9464 L and put liters in the denominator.')
+      const liters = decimal(10, 12, 2), litersLabel = liters.toFixed(2), raw = liters / .9464, answer = roundToSig(raw, 4)
+      return numeric('DIMENSIONAL_ANALYSIS', `Convert ${litersLabel} L to quarts.`, answer, 'qt', `${litersLabel} L × (1 qt / 0.9464 L) = ${raw}. Both non-exact values have 4 significant figures, so the result is ${answer} qt.`, Math.abs(answer) * .001, 'Use 1 qt = 0.9464 L and put liters in the denominator.')
     }
     if (kind === 5) {
-      const feet = decimal(2, 15, 1), answer = feet * 12 * 2.54
-      return numeric('DIMENSIONAL_ANALYSIS', `Convert ${feet.toFixed(1)} ft to centimeters using two conversion factors.`, Number(answer.toPrecision(3)), 'cm', `${feet.toFixed(1)} ft × (12 in / 1 ft) × (2.54 cm / 1 in) = ${Number(answer.toPrecision(3))} cm. Both ft and in cancel.`, answer * .002, 'Build a chain: feet → inches → centimeters.')
+      const feet = decimal(10, 15, 1), feetLabel = feet.toFixed(1), raw = feet * 12 * 2.54, answer = roundToSig(raw, 3)
+      return numeric('DIMENSIONAL_ANALYSIS', `Convert ${feetLabel} ft to centimeters using two conversion factors.`, answer, 'cm', `${feetLabel} ft × (12 in / 1 ft) × (2.54 cm / 1 in) = ${answer} cm. The input has 3 significant figures; both defined conversion factors are exact.`, Math.abs(answer) * .001, 'Build a chain: feet → inches → centimeters.')
     }
     if (kind === 6) {
-      const ml = decimal(12, 95, 1)
-      return numeric('DIMENSIONAL_ANALYSIS', `A liquid occupies ${ml} mL. Express this volume in cm³.`, ml, 'cm³', `The course relationship is 1 mL = 1 cm³, so the numerical value remains ${ml}.`, .01, 'Use 1 mL = 1 cm³.')
+      const ml = decimal(12, 95, 1), mlLabel = ml.toFixed(1)
+      return numeric('DIMENSIONAL_ANALYSIS', `A liquid occupies ${mlLabel} mL. Express this volume in cm³.`, ml, 'cm³', `The course relationship 1 mL = 1 cm³ is exact, so the ${mlLabel} measurement keeps its 3 significant figures and becomes ${mlLabel} cm³.`, .001, 'Use 1 mL = 1 cm³.')
     }
     throw new Error('Unknown conversion type')
   },
