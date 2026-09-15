@@ -56,7 +56,8 @@ const generators: Record<ConceptId, () => Question> = {
       ['Round 8,462 to 2 significant figures.', '8,500', ['8,400', '8,460', '8,462.0'], 'Keep 8 and 4; the next digit is 6, so round to 8,500.'],
     ]
     const x = pick(bank)
-    return mcq('ROUNDING', x[0], x[1], x[2] as string[], x[3], 'Report the requested precision')
+    const [prompt, correct, choices, explanation] = x as [string, string, string[], string]
+    return mcq('ROUNDING', prompt, correct, choices, explanation, 'Report the requested precision')
   },
   SIGFIG_COUNT: () => {
     const samples = [
@@ -282,14 +283,14 @@ const generators: Record<ConceptId, () => Question> = {
     return mcq('DALTON', x[0], x[1], x[2] as string[], x[3], 'Dalton’s postulates and limits')
   },
   SUBATOMIC_PARTICLES: () => {
-    const bank = [
+    const bank: Array<[string, string, string[], string]> = [
       ['Which particle is located outside the nucleus and has a −1 charge?', 'electron', ['proton', 'neutron', 'nucleon'], 'Electrons occupy the space outside the nucleus and carry negative charge.'],
       ['Which particle has approximately 1 amu of mass and a +1 charge?', 'proton', ['electron', 'neutron', 'nucleon'], 'Protons are positively charged nucleons with a relative mass near 1.'],
       ['Which two particles are called nucleons?', 'protons and neutrons', ['protons and electrons', 'neutrons and electrons', 'protons only'], 'Nucleons are the particles found in the nucleus.'],
       ['Which particle contributes about 1 amu but has no electric charge?', 'neutron', ['proton', 'electron', 'nucleon'], 'A neutron is neutral and has nearly the same mass as a proton.'],
     ]
     const x = pick(bank)
-    return mcq('SUBATOMIC_PARTICLES', x[0], x[1], x[2] as string[], x[3], 'Inside the atom')
+    return mcq('SUBATOMIC_PARTICLES', x[0], x[1], x[2], x[3], 'Inside the atom')
   },
   ISOTOPES: () => mcq('ISOTOPES', pick([
     'Two atoms have the same atomic number but different mass numbers. What must differ?',
