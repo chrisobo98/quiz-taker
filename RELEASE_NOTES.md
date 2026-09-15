@@ -29,6 +29,10 @@
 - Removed streak displays in favor of completion, mastery, audit accuracy, and meaningful session achievements.
 - Removed the arbitrary 30-report history cap; reports are retained until browser storage pressure requires oldest-first eviction.
 
+### Fixed
+
+- Fixed session completion throwing a `DataCloneError` when Vue reactive attempt records were copied into a saved report.
+
 ## 0.3.0 — Resumable practice sessions
 
 ### Added

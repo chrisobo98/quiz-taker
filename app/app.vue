@@ -40,6 +40,12 @@ type Question = {
   diagram?: ParticleDiagram
 }
 
+// Persistence models contain JSON-safe data only. Serializing before parsing also
+// unwraps Vue's reactive proxies, which the browser's structuredClone cannot clone.
+function createPersistenceSnapshot<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T
+}
+
 const concepts = [
   ['MEASUREMENT_READING', 'Measurement & uncertainty', 'Measurement'],
   ['ACCURACY_PRECISION', 'Accuracy & precision', 'Measurement'],
@@ -710,7 +716,7 @@ function finishSession() {
     quizTitle: activeQuiz.title,
     mode: mode.value,
     completedAt: new Date().toISOString(),
-    records: structuredClone(sessionRecords.value),
+    records: createPersistenceSnapshot(sessionRecords.value),
   }
   activeReport.value = report
   reportHistory.value = [report, ...reportHistory.value]
