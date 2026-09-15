@@ -22,6 +22,7 @@
 
 ### Changed
 
+- Reorganized the monolithic application into typed domain data, a quiz-engine composable, Atomic Design UI layers, a page template, and shared global styles without changing quiz behavior or persistence keys.
 - Wrong answers now provide the reasoning needed to distinguish closely related concepts while preserving retry and first-attempt metrics.
 - Increased selected-element details, category legend, and periodic-table reference-note typography for readability at 100% zoom.
 - Corrected dimensional-analysis significant-figure handling so every multiplication/division result uses the least precise non-exact value; defined conversions no longer reduce precision.

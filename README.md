@@ -49,7 +49,7 @@ No account, server, database, or external AI call is required for the current ex
 | Layer | Choice | Responsibility |
 | --- | --- | --- |
 | Application | Nuxt 4 | Build, server rendering, routing foundation |
-| UI | Vue 3 Composition API | Reactive quiz and report experience |
+| UI | Vue 3 + Atomic Design | Reusable atoms, molecules, organisms, templates, and pages |
 | Language | TypeScript | Typed questions, diagrams, glossary, and attempts |
 | Persistence | Browser `localStorage` | Mastery, lifetime statistics, and resumable sessions |
 | Content | Local, template-generated bank | Course-grounded prompts and randomized calculations |
@@ -78,15 +78,37 @@ Question templates ─── conceptId ─── Mastery engine
              localStorage
 ```
 
-Important current files:
+### Code organization
 
-- `app/app.vue` — quiz engine, current chemistry templates, modes, reports, and interface
-- `app/data/studyGlossary.ts` — subject-agnostic glossary contract and current chemistry definitions
-- `app/data/periodicTable.ts` — typed periodic-table dataset and chemistry category metadata
+The interface follows Atomic Design without forcing trivial wrappers around every HTML element:
+
+```text
+app/
+├── app.vue                         Nuxt application outlet
+├── pages/index.vue                 Concrete quiz-taker page and engine provider
+├── components/
+│   ├── atoms/                      Small reusable visual primitives
+│   ├── molecules/                  Header and particle-diagram units
+│   ├── organisms/                  Dashboard, quiz, report, and tools screens
+│   └── templates/                  Page-level screen composition
+├── composables/
+│   ├── useQuizEngine.ts            Adaptive state, scoring, reports, and persistence
+│   └── quizEngineContext.ts        Typed provide/inject boundary for UI components
+├── data/
+│   ├── concepts.ts                 Concept catalog and fresh mastery model
+│   ├── questionBank.ts             Course-grounded generators and conversion data
+│   ├── studyGlossary.ts            Misconception-aware definitions
+│   └── periodicTable.ts            Periodic-table reference data
+├── types/quiz.ts                   Shared domain contracts
+└── assets/css/main.css             Existing visual system and responsive/print styles
+```
+
+UI components consume one typed engine context instead of reimplementing quiz behavior or passing a large event chain through every visual layer. Domain data does not import UI components, and question generation is independent of rendering. This keeps future quiz packages and subjects out of the generic interface.
+
+Other important locations:
+
 - `course-materials/` — source documents used to validate the current question bank
 - `RELEASE_NOTES.md` — implemented changes by release
-
-The question engine and content still share `app/app.vue`. That is acceptable for the deadline-driven prototype, but content should move into versioned quiz packages before multiple quizzes are introduced.
 
 ## Local development
 
